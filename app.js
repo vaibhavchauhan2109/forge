@@ -192,39 +192,8 @@ const Screens = {
   today: {
     title: 'Today',
     sub: () => prettyDate(),
-    render: () => `
-      <div class="stack">
-
-        <div class="card">
-          <div class="card-head">
-            <p class="card-title">Nutrition</p>
-            <span class="tag">Phase 3</span>
-          </div>
-          <div class="stat-grid">
-            <div class="stat"><div class="stat-value">—</div><div class="stat-label">kcal</div></div>
-            <div class="stat"><div class="stat-value">—</div><div class="stat-label">protein</div></div>
-            <div class="stat"><div class="stat-value">—</div><div class="stat-label">left</div></div>
-          </div>
-          <div style="margin-top:14px" class="bar"><i style="width:0%"></i></div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <p class="card-title">Today's training</p>
-            <span class="tag">Phase 4</span>
-          </div>
-          <p class="hint">No plan yet — we'll build the planner soon.</p>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <p class="card-title">Goal</p>
-            <span class="tag">Phase 5</span>
-          </div>
-          <p class="hint">Abs in 5 months, lean mass retained.</p>
-        </div>
-
-      </div>`
+    render: () => `<div id="today-root"><div class="spinner">Loading…</div></div>`,
+    async mount() { await paintToday(); }
   },
 
   /* ---------------- FOOD ---------------- */
@@ -865,6 +834,146 @@ async function paintFood() {
     const n = await Food.copyDay(from, App.day);
     toast(n ? `Copied ${n} item${n > 1 ? 's' : ''}` : 'Nothing logged yesterday');
     if (n) await paintFood();
+  });
+}
+
+/* ============================================================
+   TODAY — dashboard
+   ============================================================ */
+function smartMeal() {
+  const h = new Date().getHours();
+  return h < 11 ? 'breakfast' : h < 16 ? 'lunch' : h < 21 ? 'dinner' : 'snack';
+}
+
+/** Consecutive days with at least one food entry (today may still be empty). */
+async function logStreak() {
+  const today = Store.dayKey();
+  const rows  = await Store.byDay('meals', Store.addDays(today, -90), today);
+  const days  = new Set(rows.map(r => r.day));
+  let d = today, n = 0;
+  if (!days.has(d)) d = Store.addDays(d, -1);   // don't punish an unfinished today
+  while (days.has(d)) { n++; d = Store.addDays(d, -1); }
+  return n;
+}
+
+async function paintToday() {
+  const root = $('#today-root');
+  if (!root) return;
+
+  const day    = Store.dayKey();
+  const t      = Calc.targets(Store.s);
+  const totals = await Food.dayTotals(day);
+  const sm     = Calc.summary(Store.s);
+  const streak = await logStreak();
+  const hour   = new Date().getHours();
+
+  const kTar  = t ? t.kcal : 0;
+  const pTar  = t ? t.protein : 0;
+  const kLeft = Math.round(kTar - totals.kcal);
+  const pLeft = Math.round(pTar - totals.protein);
+  const pPct  = pTar ? totals.protein / pTar : 0;
+
+  /* ---- nudge logic ---- */
+  let nudge = '';
+  if (t && hour >= 18 && pPct < 0.7) {
+    nudge = `<div class="verdict tone-warn" style="margin-top:14px">
+      <b>${pLeft} g protein still to go</b> and it's getting late.
+      A shake or 200 g of Greek yoghurt closes most of that gap.</div>`;
+  } else if (t && pPct >= 1) {
+    nudge = `<div class="verdict tone-good" style="margin-top:14px">
+      <b>Protein target hit.</b> ${kLeft >= 0 ? kLeft + ' kcal still available.' : 'You\'re over on calories — keep it light.'}</div>`;
+  } else if (t && kLeft < 0) {
+    nudge = `<div class="verdict tone-bad" style="margin-top:14px">
+      <b>${Math.abs(kLeft)} kcal over target.</b> One day won't undo anything — get back on it tomorrow.</div>`;
+  }
+
+  /* ---- nutrition card ---- */
+  const nutrition = t ? `
+    <div class="card">
+      <div class="card-head">
+        <p class="card-title">Nutrition</p>
+        <a href="#/food" style="color:var(--accent);font-size:13px;font-weight:700">Open log ›</a>
+      </div>
+
+      <div style="display:flex;gap:12px;justify-content:center;align-items:center">
+        ${ringSVG({ pct: kTar ? totals.kcal / kTar : 0, size: 104, stroke: 10,
+                    big: Math.round(totals.kcal), small: 'of ' + kTar + ' kcal' })}
+        ${ringSVG({ pct: pPct, size: 104, stroke: 10, color: 'var(--protein)',
+                    big: Math.round(totals.protein) + 'g', small: 'of ' + pTar + 'g protein' })}
+      </div>
+
+      <div class="mbars" style="margin-top:18px">
+        ${macroBar('c', 'Carbs', totals.carbs, t.carbs)}
+        ${macroBar('f', 'Fat',   totals.fat,   t.fat)}
+      </div>
+
+      ${nudge}
+
+      <button class="btn btn-primary btn-block" id="quick-log" style="margin-top:14px">
+        + Log ${Food.mealLabel(smartMeal()).toLowerCase()}
+      </button>
+    </div>` : `
+    <div class="card">
+      <p class="hint">Finish your profile to get calorie and protein targets.</p>
+      <a class="btn btn-primary btn-sm btn-block" href="#/profile" style="margin-top:12px">Set up profile</a>
+    </div>`;
+
+  /* ---- goal card ---- */
+  const pl = sm.plan;
+  const goalCard = pl && !pl.expired ? `
+    <div class="card">
+      <div class="card-head">
+        <p class="card-title">Goal</p>
+        <a href="#/goal" style="color:var(--accent);font-size:13px;font-weight:700">Edit ›</a>
+      </div>
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-value">${pl.daysLeft}</div><div class="stat-label">days left</div></div>
+        <div class="stat"><div class="stat-value">${pl.currentBf}%</div><div class="stat-label">body fat</div></div>
+        <div class="stat"><div class="stat-value">${pl.fatToLoseKg > 0 ? pl.fatToLoseKg : 0}</div><div class="stat-label">kg to go</div></div>
+      </div>
+      <div class="verdict tone-${pl.tone}" style="margin-top:14px">
+        <b>${pl.verdict}</b> — ${pl.targetBf}% body fat by ${fmtDate(Store.s.targetDate)}
+        needs about ${pl.rateKgPerWeek} kg/week.
+      </div>
+      ${sm.abs && !sm.abs.visible ? `<div style="margin-top:12px">
+        ${kv('Abs threshold', '~' + sm.abs.threshold + '%')}
+        ${kv('Body fat to lose', sm.abs.pctToGo + '%')}
+        ${kv('Estimate at safe pace', '~' + sm.abs.weeks + ' weeks')}
+      </div>` : ''}
+    </div>` : `
+    <div class="card">
+      <div class="card-head"><p class="card-title">Goal</p></div>
+      <p class="hint">${pl?.expired ? 'Your target date has passed.' : 'No goal set yet.'}</p>
+      <a class="btn btn-sm btn-block" href="#/goal" style="margin-top:12px">Set a goal</a>
+    </div>`;
+
+  /* ---- training placeholder ---- */
+  const training = `
+    <div class="card">
+      <div class="card-head"><p class="card-title">Training</p><span class="tag">Phase 4</span></div>
+      <p class="hint">Planner and session logger coming next.</p>
+    </div>`;
+
+  /* ---- habits ---- */
+  const habits = `
+    <div class="card">
+      <div class="card-head"><p class="card-title">Consistency</p></div>
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-value">${streak}</div><div class="stat-label">day streak</div></div>
+        <div class="stat"><div class="stat-value">${sm.bmi ?? '—'}</div><div class="stat-label">BMI</div></div>
+        <div class="stat"><div class="stat-value">${Store.s.weightKg ?? '—'}</div><div class="stat-label">kg</div></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <a class="btn btn-sm btn-ghost" href="#/measure" style="flex:1">Log measurements</a>
+        <a class="btn btn-sm btn-ghost" href="#/food" style="flex:1">Food log</a>
+      </div>
+    </div>`;
+
+  root.innerHTML = `<div class="stack">${nutrition}${goalCard}${training}${habits}</div>`;
+
+  $('#quick-log')?.addEventListener('click', () => {
+    App.addCtx = { day: Store.dayKey(), meal: smartMeal() };
+    location.hash = '#/add';
   });
 }
 
