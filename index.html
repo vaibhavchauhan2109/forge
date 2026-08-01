@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+
+<!-- viewport-fit=cover lets us paint under the notch/Dynamic Island.
+     user-scalable=no + maximum-scale kills pinch-zoom so it feels native. -->
+<meta name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+
+<title>Forge</title>
+<meta name="description" content="Personal training, nutrition and body composition tracker.">
+
+<!-- PWA manifest (built in step 1.5) -->
+<link rel="manifest" href="./manifest.webmanifest">
+<meta name="theme-color" content="#0b0b0f">
+<meta name="color-scheme" content="dark">
+
+<!-- ===== iOS standalone-mode flags ===== -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<!-- black-translucent = our own background flows under the status bar -->
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- This is the name that appears under the home screen icon -->
+<meta name="apple-mobile-web-app-title" content="Forge">
+<link rel="apple-touch-icon" href="./icons/icon-180.png">
+
+<link rel="stylesheet" href="./app.css">
+</head>
+
+<body>
+
+<!-- ============ HEADER ============ -->
+<header id="topbar">
+  <div class="bar-inner">
+    <div class="bar-left">
+      <h1 id="screen-title">Today</h1>
+      <p id="screen-sub"></p>
+    </div>
+    <div class="bar-right" id="bar-action"><!-- per-screen buttons inject here --></div>
+  </div>
+</header>
+
+<!-- ============ SCREEN CONTENT ============ -->
+<!-- app.js renders the active screen into here -->
+<main id="view" aria-live="polite"></main>
+
+<!-- ============ BOTTOM TAB BAR ============ -->
+<nav id="tabbar">
+
+  <a class="tab" href="#/today" data-tab="today">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3"/></svg>
+    <em>Today</em>
+  </a>
+
+  <a class="tab" href="#/food" data-tab="food">
+    <svg viewBox="0 0 24 24"><path d="M3.5 11h17a8.5 8.5 0 0 1-17 0Z"/><path d="M2.5 20h19"/></svg>
+    <em>Food</em>
+  </a>
+
+  <a class="tab" href="#/train" data-tab="train">
+    <svg viewBox="0 0 24 24"><path d="M3.5 9v6M7.5 6.5v11M16.5 6.5v11M20.5 9v6M7.5 12h9"/></svg>
+    <em>Train</em>
+  </a>
+
+  <a class="tab" href="#/body" data-tab="body">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="6" r="3.2"/><path d="M6 21v-3.5a6 6 0 0 1 12 0V21"/></svg>
+    <em>Body</em>
+  </a>
+
+  <a class="tab" href="#/settings" data-tab="settings">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2l-2.1 2.1M7.3 16.7l-2.1 2.1"/></svg>
+    <em>More</em>
+  </a>
+
+</nav>
+
+<!-- toast notifications live here -->
+<div id="toast-host"></div>
+
+<noscript><p style="padding:2rem;color:#fff">This app needs JavaScript enabled.</p></noscript>
+
+<script src="./app.js"></script>
+
+<script>
+/* ---------- Service worker: makes the app work with zero signal ---------- */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function (e) {
+      console.warn('SW registration failed', e);
+    });
+  });
+}
+
+/* ---------- Ask iOS not to evict our data ---------- */
+if (navigator.storage && navigator.storage.persist) {
+  navigator.storage.persist().catch(function(){});
+}
+
+/* ---------- Block pinch-zoom + double-tap zoom (feels non-native) ---------- */
+document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+var lastTouch = 0;
+document.addEventListener('touchend', function (e) {
+  var now = Date.now();
+  if (now - lastTouch <= 300) e.preventDefault();
+  lastTouch = now;
+}, { passive: false });
+</script>
+
+</body>
+</html>

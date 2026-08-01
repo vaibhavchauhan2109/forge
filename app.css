@@ -1,0 +1,179 @@
+/* ============================================================
+   FORGE — design system
+   ============================================================ */
+:root{
+  --bg:#0b0b0f;
+  --surface:#15161d;
+  --surface-2:#1e202a;
+  --line:#282b37;
+  --text:#f3f4f8;
+  --dim:#8a90a2;
+  --accent:#ff6a2b;        /* calories / primary action */
+  --protein:#2ee6a8;       /* protein */
+  --carb:#4aa8ff;
+  --fat:#ffcf4a;
+  --danger:#ff4d5e;
+  --radius:16px;
+  --tabbar-h:56px;
+  --safe-top:env(safe-area-inset-top,0px);
+  --safe-bottom:env(safe-area-inset-bottom,0px);
+}
+
+*,*::before,*::after{box-sizing:border-box}
+
+html,body{margin:0;padding:0;height:100%}
+
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+  font-size:16px;
+  line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+  -webkit-tap-highlight-color:transparent;
+  -webkit-user-select:none;
+  user-select:none;
+  overscroll-behavior-y:contain;
+}
+
+/* text you SHOULD be able to select */
+input,textarea,.selectable{-webkit-user-select:text;user-select:text}
+
+a{color:inherit;text-decoration:none}
+
+/* ============================ HEADER ============================ */
+#topbar{
+  position:sticky;top:0;z-index:50;
+  padding-top:var(--safe-top);
+  background:rgba(11,11,15,.72);
+  backdrop-filter:saturate(160%) blur(18px);
+  -webkit-backdrop-filter:saturate(160%) blur(18px);
+  border-bottom:1px solid var(--line);
+}
+.bar-inner{
+  display:flex;align-items:flex-end;justify-content:space-between;
+  gap:12px;padding:10px 16px 12px;
+}
+#screen-title{margin:0;font-size:28px;font-weight:800;letter-spacing:-.5px}
+#screen-sub{margin:2px 0 0;font-size:13px;color:var(--dim)}
+.bar-right{display:flex;gap:8px;align-items:center;flex-shrink:0}
+
+/* ============================ LAYOUT ============================ */
+#view{
+  padding:16px 16px calc(var(--tabbar-h) + var(--safe-bottom) + 28px);
+  max-width:640px;margin:0 auto;
+}
+.stack{display:flex;flex-direction:column;gap:14px}
+
+/* ============================ CARDS ============================ */
+.card{
+  background:var(--surface);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  padding:16px;
+}
+.card-head{
+  display:flex;align-items:center;justify-content:space-between;
+  margin:-2px 0 12px;
+}
+.card-title{font-size:13px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--dim);margin:0}
+
+.hint{color:var(--dim);font-size:14px;margin:0}
+
+/* rows / lists */
+.row{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:13px 0;border-bottom:1px solid var(--line);
+}
+.row:last-child{border-bottom:0}
+.row-main{min-width:0}
+.row-title{font-size:16px;font-weight:600}
+.row-sub{font-size:13px;color:var(--dim)}
+.row-value{font-size:16px;font-variant-numeric:tabular-nums;color:var(--dim);flex-shrink:0}
+.chev::after{content:"›";color:var(--dim);font-size:22px;line-height:1;margin-left:4px}
+
+/* ============================ STATS ============================ */
+.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.stat{
+  background:var(--surface-2);border-radius:12px;padding:12px 10px;text-align:center;
+}
+.stat-value{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
+.stat-label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+
+/* progress bar */
+.bar{height:8px;border-radius:99px;background:var(--surface-2);overflow:hidden}
+.bar > i{display:block;height:100%;border-radius:99px;background:var(--accent);transition:width .35s ease}
+
+/* ============================ BUTTONS ============================ */
+.btn{
+  appearance:none;border:1px solid var(--line);background:var(--surface-2);
+  color:var(--text);font:inherit;font-weight:600;
+  padding:12px 16px;border-radius:12px;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  transition:transform .08s ease,opacity .15s ease;
+  touch-action:manipulation;
+}
+.btn:active{transform:scale(.97);opacity:.85}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#1a0a02}
+.btn-ghost{background:transparent}
+.btn-danger{background:transparent;border-color:var(--danger);color:var(--danger)}
+.btn-sm{padding:8px 12px;font-size:14px;border-radius:10px}
+.btn-block{width:100%}
+.btn-round{width:34px;height:34px;padding:0;border-radius:50%;font-size:20px}
+
+/* ============================ FORMS ============================ */
+label.field{display:block;margin-bottom:14px}
+label.field > span{display:block;font-size:13px;color:var(--dim);margin-bottom:6px;font-weight:600}
+input,select,textarea{
+  width:100%;font:inherit;font-size:17px;   /* >=16px or iOS zooms on focus */
+  color:var(--text);background:var(--surface-2);
+  border:1px solid var(--line);border-radius:12px;
+  padding:12px 14px;appearance:none;
+}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+/* ============================ TAB BAR ============================ */
+#tabbar{
+  position:fixed;left:0;right:0;bottom:0;z-index:60;
+  height:calc(var(--tabbar-h) + var(--safe-bottom));
+  padding-bottom:var(--safe-bottom);
+  display:grid;grid-template-columns:repeat(5,1fr);
+  background:rgba(11,11,15,.82);
+  backdrop-filter:saturate(160%) blur(18px);
+  -webkit-backdrop-filter:saturate(160%) blur(18px);
+  border-top:1px solid var(--line);
+}
+.tab{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  color:var(--dim);font-size:10px;font-weight:600;
+  transition:color .15s ease;
+}
+.tab svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round}
+.tab em{font-style:normal;letter-spacing:.2px}
+.tab.active{color:var(--accent)}
+.tab:active{opacity:.6}
+
+/* ============================ TOAST ============================ */
+#toast-host{
+  position:fixed;left:0;right:0;z-index:100;
+  bottom:calc(var(--tabbar-h) + var(--safe-bottom) + 14px);
+  display:flex;flex-direction:column;align-items:center;gap:8px;
+  pointer-events:none;
+}
+.toast{
+  background:var(--surface-2);border:1px solid var(--line);
+  padding:10px 16px;border-radius:99px;font-size:14px;font-weight:600;
+  box-shadow:0 8px 24px rgba(0,0,0,.5);
+  animation:toast-in .22s ease;
+}
+@keyframes toast-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+/* ============================ MISC ============================ */
+.empty{text-align:center;padding:34px 16px;color:var(--dim)}
+.empty h3{color:var(--text);margin:0 0 6px;font-size:17px}
+.tag{
+  display:inline-block;font-size:11px;font-weight:700;letter-spacing:.4px;
+  padding:3px 8px;border-radius:99px;background:var(--surface-2);color:var(--dim);
+}
