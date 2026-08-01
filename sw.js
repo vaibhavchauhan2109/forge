@@ -4,8 +4,8 @@
       If you don't, your iPhone will keep serving the old files
       and you will lose an hour wondering why nothing updated.
    ============================================================ */
-   
-const VERSION = 'v5';
+
+const VERSION = 'v6';
 const CACHE   = `forge-${VERSION}`;
 
 const ASSETS = [
@@ -14,6 +14,7 @@ const ASSETS = [
   './app.css',
   './store.js',
   './calc.js',
+  './food.js',
   './app.js',
   './manifest.webmanifest',
   './icons/icon-180.png',

@@ -241,3 +241,119 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
   position:sticky;bottom:calc(var(--tabbar-h) + var(--safe-bottom) + 8px);
   padding-top:8px;
 }
+/* ---------- date navigator ---------- */
+.datenav{
+  display:flex;align-items:center;justify-content:space-between;
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:14px;padding:6px 8px;margin-bottom:14px;
+}
+.datenav button{
+  appearance:none;border:0;background:transparent;color:var(--accent);
+  font-size:26px;line-height:1;padding:4px 14px;cursor:pointer;font-weight:300;
+}
+.datenav button:disabled{color:var(--line);cursor:default}
+.datenav .dn-label{font-size:15px;font-weight:700;text-align:center;flex:1}
+.datenav .dn-label small{display:block;font-weight:500;color:var(--dim);font-size:11px}
+
+/* ---------- ring ---------- */
+.ring-wrap{display:flex;align-items:center;gap:18px}
+.ring{position:relative;flex-shrink:0}
+.ring svg{display:block;transform:rotate(-90deg)}
+.ring .ring-c{fill:none;stroke:var(--surface-2)}
+.ring .ring-v{fill:none;stroke-linecap:round;transition:stroke-dashoffset .5s ease}
+.ring-txt{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;text-align:center;
+}
+.ring-txt b{font-size:22px;font-weight:800;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+.ring-txt small{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+
+/* ---------- macro bars ---------- */
+.mbars{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px}
+.mbar-top{display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px}
+.mbar-top b{font-variant-numeric:tabular-nums}
+.mbar-top span{color:var(--dim)}
+.mbar-track{height:7px;border-radius:99px;background:var(--surface-2);overflow:hidden}
+.mbar-fill{display:block;height:100%;border-radius:99px;transition:width .4s ease}
+.mbar.p .mbar-fill{background:var(--protein)}
+.mbar.c .mbar-fill{background:var(--carb)}
+.mbar.f .mbar-fill{background:var(--fat)}
+.mbar.over .mbar-fill{background:var(--danger)}
+
+/* ---------- meal sections ---------- */
+.meal{margin-bottom:12px}
+.meal-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 4px 8px;
+}
+.meal-head h3{margin:0;font-size:15px;font-weight:800;letter-spacing:-.2px}
+.meal-head .meal-kcal{font-size:13px;color:var(--dim);font-variant-numeric:tabular-nums}
+.meal-body{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+
+.fentry{
+  display:flex;align-items:center;gap:10px;
+  padding:11px 12px;border-bottom:1px solid var(--line);
+}
+.fentry:last-child{border-bottom:0}
+.fentry-main{flex:1;min-width:0}
+.fentry-name{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fentry-sub{font-size:12px;color:var(--dim)}
+.fentry-macros{text-align:right;flex-shrink:0}
+.fentry-k{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
+.fentry-p{font-size:11px;color:var(--protein);font-variant-numeric:tabular-nums}
+.fentry-del{
+  appearance:none;border:0;background:transparent;color:var(--dim);
+  font-size:22px;line-height:1;padding:2px 2px 6px 8px;cursor:pointer;flex-shrink:0;
+}
+.fentry-del:active{color:var(--danger)}
+
+.meal-add{
+  display:block;width:100%;text-align:center;
+  padding:11px;background:transparent;border:0;border-top:1px solid var(--line);
+  color:var(--accent);font:inherit;font-size:14px;font-weight:700;cursor:pointer;
+}
+.meal-add:active{opacity:.5}
+.meal-empty{padding:14px 12px;color:var(--dim);font-size:14px;text-align:center}
+
+/* ---------- chips ---------- */
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{
+  appearance:none;border:1px solid var(--line);background:var(--surface-2);
+  color:var(--text);font:inherit;font-size:13px;font-weight:600;
+  padding:7px 12px;border-radius:99px;cursor:pointer;
+}
+.chip:active{opacity:.6}
+.chip.on{border-color:var(--accent);color:var(--accent)}
+
+/* ---------- search / picker lists ---------- */
+.searchbar{position:relative;margin-bottom:12px}
+.searchbar input{padding-right:40px}
+.searchbar .sb-clear{
+  position:absolute;right:6px;top:50%;transform:translateY(-50%);
+  border:0;background:transparent;color:var(--dim);font-size:20px;padding:6px 8px;cursor:pointer;
+}
+.picker{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.pick{
+  display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  padding:12px;background:transparent;border:0;border-bottom:1px solid var(--line);
+  color:var(--text);font:inherit;cursor:pointer;
+}
+.pick:last-child{border-bottom:0}
+.pick:active{background:var(--surface-2)}
+.pick-main{flex:1;min-width:0}
+.pick-name{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pick-sub{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pick-k{font-size:13px;color:var(--dim);font-variant-numeric:tabular-nums;flex-shrink:0;text-align:right}
+.pick-k b{display:block;color:var(--protein);font-size:11px}
+.star{font-size:16px;flex-shrink:0;color:var(--fat)}
+
+/* ---------- source tabs ---------- */
+.srctabs{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin-bottom:14px;
+  background:var(--surface-2);border-radius:12px;padding:3px}
+.srctab{
+  padding:9px 4px;text-align:center;font-size:13px;font-weight:700;
+  color:var(--dim);border-radius:9px;cursor:pointer;border:0;background:transparent;font-family:inherit;
+}
+.srctab.on{background:var(--surface);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.4)}
+
+.spinner{text-align:center;padding:26px;color:var(--dim);font-size:14px}

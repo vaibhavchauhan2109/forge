@@ -117,6 +117,66 @@ function livePreview(form, build) {
   paint();
 }
 
+/* ---------------- ring renderer ---------------- */
+function ringSVG({ pct, color = 'var(--accent)', size = 92, stroke = 9, big, small }) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const p = Math.max(0, Math.min(1.15, pct || 0));       // allow slight overshoot
+  const off = c * (1 - Math.min(p, 1));
+  const over = p > 1;
+  return `
+    <div class="ring" style="width:${size}px;height:${size}px">
+      <svg width="${size}" height="${size}">
+        <circle class="ring-c" cx="${size/2}" cy="${size/2}" r="${r}" stroke-width="${stroke}"></circle>
+        <circle class="ring-v" cx="${size/2}" cy="${size/2}" r="${r}" stroke-width="${stroke}"
+          stroke="${over ? 'var(--danger)' : color}"
+          stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"></circle>
+      </svg>
+      <div class="ring-txt"><b>${big}</b><small>${small}</small></div>
+    </div>`;
+}
+
+function macroBar(cls, label, have, target) {
+  const pct = target ? have / target : 0;
+  const over = pct > 1.02;
+  return `
+    <div class="mbar ${cls} ${over ? 'over' : ''}">
+      <div class="mbar-top"><span>${label}</span>
+        <b>${Math.round(have)}<span style="color:var(--dim)"> / ${Math.round(target)} g</span></b></div>
+      <div class="mbar-track"><i class="mbar-fill" style="width:${Math.min(100, pct*100).toFixed(1)}%"></i></div>
+    </div>`;
+}
+
+/* ---------------- day navigation state ---------------- */
+App.day = Store.dayKey();
+
+function dayLabel(day) {
+  const today = Store.dayKey();
+  const diff  = Store.daysBetween(day, today);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  if (diff === -1) return 'Tomorrow';
+  return fmtDate(day);
+}
+
+function dateNav(onChange) {
+  return `
+    <div class="datenav">
+      <button id="dn-prev" aria-label="Previous day">‹</button>
+      <div class="dn-label">${dayLabel(App.day)}<small>${fmtDate(App.day)}</small></div>
+      <button id="dn-next" aria-label="Next day"
+        ${App.day >= Store.dayKey() ? 'disabled' : ''}>›</button>
+    </div>`;
+}
+
+function wireDateNav(repaint) {
+  $('#dn-prev')?.addEventListener('click', () => { App.day = Store.addDays(App.day, -1); repaint(); });
+  $('#dn-next')?.addEventListener('click', () => {
+    if (App.day >= Store.dayKey()) return;
+    App.day = Store.addDays(App.day, 1); repaint();
+  });
+}
+
 /* ---------------------------------------------------------------
    SCREENS
    Each screen: { title, sub(), action(), render(), mount() }
@@ -170,16 +230,9 @@ const Screens = {
   /* ---------------- FOOD ---------------- */
   food: {
     title: 'Food',
-    sub: () => 'Meal log & protein',
-    action: () => `<button class="btn btn-primary btn-sm" id="add-food">+ Add</button>`,
-    render: () => `
-      <div class="empty">
-        <h3>Meal logger</h3>
-        <p class="hint">Coming in Phase 3: quick-add, your own food library, barcode scanning.</p>
-      </div>`,
-    mount() {
-      $('#add-food')?.addEventListener('click', () => toast('Meal logging arrives in Phase 3'));
-    }
+    sub: () => 'Meal log',
+    render: () => `<div id="food-root"><div class="spinner">Loading…</div></div>`,
+    async mount() { await paintFood(); }
   },
 
   /* ---------------- TRAIN ---------------- */
@@ -669,6 +722,142 @@ Screens.goal = {
     });
   }
 };
+/* ============================================================
+   FOOD — day view painter
+   Called by Screens.food.mount() and after every mutation.
+   ============================================================ */
+async function paintFood() {
+  const root = $('#food-root');
+  if (!root) return;
+
+  const t      = Calc.targets(Store.s);
+  const meals  = await Food.dayByMeal(App.day);
+  const totals = Food.sum(meals.flatMap(m => m.entries));
+  const any    = meals.some(m => m.entries.length);
+
+  const kTar = t ? t.kcal : 0;
+  const pTar = t ? t.protein : 0;
+  const kLeft = Math.round(kTar - totals.kcal);
+  const pLeft = Math.round(pTar - totals.protein);
+
+  /* ---- summary ---- */
+  const summary = t ? `
+    <div class="card">
+      <div class="ring-wrap">
+        ${ringSVG({
+          pct: kTar ? totals.kcal / kTar : 0,
+          big: Math.round(totals.kcal),
+          small: 'of ' + kTar
+        })}
+        <div class="mbars">
+          ${macroBar('p', 'Protein', totals.protein, pTar)}
+          ${macroBar('c', 'Carbs',   totals.carbs,   t.carbs)}
+          ${macroBar('f', 'Fat',     totals.fat,     t.fat)}
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        ${kv('Calories left', kLeft >= 0 ? kLeft + ' kcal' : Math.abs(kLeft) + ' kcal over',
+             kLeft >= 0 ? 'good' : 'bad')}
+        ${kv('Protein left', pLeft > 0 ? pLeft + ' g' : 'target hit ✓',
+             pLeft > 0 ? 'warn' : 'good')}
+        ${totals.fiber ? kv('Fibre', Math.round(totals.fiber) + ' g') : ''}
+      </div>
+    </div>` : `
+    <div class="card">
+      <p class="hint">Set up your profile and goal to see targets.</p>
+      <a class="btn btn-sm btn-block" href="#/profile" style="margin-top:10px">Open profile</a>
+    </div>`;
+
+  /* ---- undo bar ---- */
+  const undo = App.lastDeleted ? `
+    <div class="verdict tone-warn" style="margin-bottom:12px;display:flex;
+         align-items:center;justify-content:space-between;gap:10px">
+      <span>Removed ${esc(App.lastDeleted.name)}</span>
+      <button class="btn btn-sm" id="undo-del">Undo</button>
+    </div>` : '';
+
+  /* ---- meal sections ---- */
+  const sections = meals.map(m => `
+    <div class="meal">
+      <div class="meal-head">
+        <h3>${m.label}</h3>
+        <span class="meal-kcal">${m.entries.length
+          ? Math.round(m.totals.kcal) + ' kcal · ' + Math.round(m.totals.protein) + ' g P'
+          : ''}</span>
+      </div>
+      <div class="meal-body">
+        ${m.entries.length
+          ? m.entries.map(e => `
+            <div class="fentry">
+              <div class="fentry-main">
+                <div class="fentry-name">${esc(e.name)}</div>
+                <div class="fentry-sub">${esc(entryAmount(e))}${e.brand ? ' · ' + esc(e.brand) : ''}</div>
+              </div>
+              <div class="fentry-macros">
+                <div class="fentry-k">${Math.round(e.kcal)}</div>
+                <div class="fentry-p">${Math.round(e.protein)} g P</div>
+              </div>
+              <button class="fentry-del" data-del="${e.id}" aria-label="Remove">×</button>
+            </div>`).join('')
+          : `<div class="meal-empty">Nothing logged</div>`}
+        <button class="meal-add" data-add="${m.key}">+ Add to ${m.label.toLowerCase()}</button>
+      </div>
+    </div>`).join('');
+
+  /* ---- footer ---- */
+  const footer = `
+    <div class="stack" style="margin-top:6px">
+      ${!any ? `<button class="btn btn-block" id="copy-yday">Copy yesterday's food</button>` : ''}
+      ${any  ? `<button class="btn btn-block btn-ghost" id="copy-yday">Copy yesterday on top</button>` : ''}
+    </div>`;
+
+  root.innerHTML = dateNav() + undo + summary
+                 + `<div style="height:16px"></div>` + sections + footer;
+
+  /* keep the header subtitle in sync with the visible day */
+  $('#screen-sub').textContent = dayLabel(App.day);
+
+  /* ---------------- wiring ---------------- */
+
+  wireDateNav(() => { App.lastDeleted = null; paintFood(); });
+
+  /* add → goes to the Add Food screen with context */
+  $$('[data-add]').forEach(b => b.addEventListener('click', () => {
+    App.addCtx = { day: App.day, meal: b.dataset.add };
+    location.hash = '#/add';
+  }));
+
+  /* delete with undo */
+  $$('[data-del]').forEach(b => b.addEventListener('click', async () => {
+    const entry = await Food.getEntry(b.dataset.del);
+    await Food.removeEntry(b.dataset.del);
+    App.lastDeleted = entry;
+    tick();
+    await paintFood();
+  }));
+
+  $('#undo-del')?.addEventListener('click', async () => {
+    const e = App.lastDeleted;
+    App.lastDeleted = null;
+    if (e) await Food.updateEntry(e);
+    await paintFood();
+  });
+
+  /* copy yesterday */
+  $('#copy-yday')?.addEventListener('click', async () => {
+    const from = Store.addDays(App.day, -1);
+    const n = await Food.copyDay(from, App.day);
+    toast(n ? `Copied ${n} item${n > 1 ? 's' : ''}` : 'Nothing logged yesterday');
+    if (n) await paintFood();
+  });
+}
+
+/** "150 g" / "1 scoop (30 g)" / "1 serving" */
+function entryAmount(e) {
+  if (e.grams && e.servingLabel) return `${e.servingLabel} (${Math.round(e.grams)} g)`;
+  if (e.grams) return `${Math.round(e.grams)} g`;
+  return e.servingLabel || '1 serving';
+}
 
 /** True when launched from the home screen icon (not in Safari). */
 function isStandalone() {
@@ -688,6 +877,7 @@ function render() {
   const name   = currentRouteName();
   const screen = Screens[name];
   App.route = name;
+  if (name !== 'food') App.lastDeleted = null;
 
   /* header */
   $('#screen-title').textContent = screen.title;
@@ -725,6 +915,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   try {
     await Store.boot();
+    await Food.seedIfEmpty();
   } catch (err) {
     $('#view').innerHTML =
       `<div class="empty"><h3>Storage unavailable</h3>
