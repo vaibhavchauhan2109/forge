@@ -1540,6 +1540,326 @@ function paintPortion() {
   });
 }
 
+/* ============================================================
+   TEMPLATE EDITOR
+   ============================================================ */
+Screens.template = {
+  title: () => (App.tplState?.tpl?.id ? 'Edit workout' : 'New workout'),
+  tab: 'train', back: '#/train',
+  sub: () => App.tplState?.view === 'pick' ? 'Choose an exercise' : 'Structure & progression',
+  render: () => `<div id="tpl-root"><div class="spinner">Loading…</div></div>`,
+  async mount() {
+    let tpl = App.tplId ? await Train.getTemplate(App.tplId) : null;
+    if (!tpl) {
+      const all = await Train.allTemplates();
+      tpl = { id: null, name: '', dayHint: null, order: all.length, slots: [] };
+    }
+    App.tplState = { tpl: JSON.parse(JSON.stringify(tpl)), view: 'edit', q: '', muscle: null };
+    await paintTemplate();
+  }
+};
+
+async function paintTemplate() {
+  const st = App.tplState;
+  if (st.view === 'pick')  return paintExPicker();
+  if (st.view === 'newex') return paintNewExercise();
+  return paintTplEdit();
+}
+
+/* ---------------- edit view ---------------- */
+function paintTplEdit() {
+  const st = App.tplState, t = st.tpl;
+
+  const dayOpts = ['<option value="">No fixed day</option>']
+    .concat(DOW.map((d, i) => `<option value="${i}" ${t.dayHint === i ? 'selected' : ''}>${d}</option>`))
+    .join('');
+
+  const restOpts = g => [45, 60, 90, 120, 150, 180, 240]
+    .map(v => `<option value="${v}" ${v === g ? 'selected' : ''}>${v}s</option>`).join('');
+
+  $('#tpl-root').innerHTML = `
+    <div class="stack">
+      <div class="card">
+        <label class="field"><span>Workout name</span>
+          <input id="tpl-name" data-type="text" value="${esc(t.name)}" placeholder="Upper A"></label>
+        <label class="field" style="margin-bottom:0"><span>Scheduled day</span>
+          <select id="tpl-day">${dayOpts}</select></label>
+      </div>
+
+      <div class="card" style="padding:0">
+        <div class="card-head" style="padding:16px 16px 10px;margin:0">
+          <p class="card-title">Exercises (${t.slots.length})</p>
+          <span class="tag">${t.slots.reduce((n, s) => n + (+s.sets || 0), 0)} sets</span>
+        </div>
+        ${t.slots.length ? t.slots.map((s, i) => `
+          <div class="slot">
+            <div class="slot-top">
+              <span class="slot-name">${i + 1}. ${esc(s.exerciseName)}</span>
+              <button class="iconbtn" data-up="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
+              <button class="iconbtn" data-down="${i}" ${i === t.slots.length - 1 ? 'disabled' : ''}>↓</button>
+              <button class="iconbtn danger" data-rm="${i}">×</button>
+            </div>
+            <div class="slot-grid">
+              <div><label>Sets</label>
+                <input type="number" inputmode="numeric" min="1" max="10"
+                       data-i="${i}" data-k="sets" value="${s.sets}"></div>
+              <div><label>Rep min</label>
+                <input type="number" inputmode="numeric" min="1" max="50"
+                       data-i="${i}" data-k="repMin" value="${s.repMin}"></div>
+              <div><label>Rep max</label>
+                <input type="number" inputmode="numeric" min="1" max="60"
+                       data-i="${i}" data-k="repMax" value="${s.repMax}"></div>
+              <div><label>RIR</label>
+                <input type="number" inputmode="numeric" min="0" max="5"
+                       data-i="${i}" data-k="rir" value="${s.rir}"></div>
+              <div><label>Rest</label>
+                <select data-i="${i}" data-k="restSec">${restOpts(+s.restSec)}</select></div>
+            </div>
+          </div>`).join('')
+        : `<div class="meal-empty">No exercises yet</div>`}
+        <button class="meal-add" id="add-ex">+ Add exercise</button>
+      </div>
+
+      <div class="sticky-save">
+        <button class="btn btn-primary btn-block" id="tpl-save">
+          ${t.id ? 'Save changes' : 'Create workout'}</button>
+      </div>
+
+      ${t.id ? `
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-ghost btn-sm" id="tpl-dup" style="flex:1">Duplicate</button>
+        <button class="btn btn-danger btn-sm" id="tpl-del" style="flex:1">Delete</button>
+      </div>` : ''}
+    </div>`;
+
+  $('#tpl-name').addEventListener('input', e => { st.tpl.name = e.target.value; });
+  $('#tpl-day').addEventListener('change', e => {
+    st.tpl.dayHint = e.target.value === '' ? null : Number(e.target.value);
+  });
+
+  $$('[data-k]').forEach(el => el.addEventListener('input', () => {
+    const i = Number(el.dataset.i);
+    const v = Number(el.value);
+    if (isFinite(v)) st.tpl.slots[i][el.dataset.k] = v;
+  }));
+
+  $$('[data-up]').forEach(b => b.addEventListener('click', () => {
+    const i = Number(b.dataset.up);
+    [st.tpl.slots[i - 1], st.tpl.slots[i]] = [st.tpl.slots[i], st.tpl.slots[i - 1]];
+    paintTplEdit();
+  }));
+
+  $$('[data-down]').forEach(b => b.addEventListener('click', () => {
+    const i = Number(b.dataset.down);
+    [st.tpl.slots[i + 1], st.tpl.slots[i]] = [st.tpl.slots[i], st.tpl.slots[i + 1]];
+    paintTplEdit();
+  }));
+
+  $$('[data-rm]').forEach(b => b.addEventListener('click', () => {
+    st.tpl.slots.splice(Number(b.dataset.rm), 1);
+    paintTplEdit();
+  }));
+
+  $('#add-ex').addEventListener('click', () => {
+    st.view = 'pick'; st.q = ''; st.muscle = null;
+    $('#screen-sub').textContent = 'Choose an exercise';
+    paintTemplate();
+  });
+
+  $('#tpl-save').addEventListener('click', async () => {
+    if (!st.tpl.name.trim())  return toast('Give the workout a name');
+    if (!st.tpl.slots.length) return toast('Add at least one exercise');
+    const saved = await Train.saveTemplate(st.tpl);
+    App.tplId = saved.id;
+    toast('Saved');
+    location.hash = '#/train';
+  });
+
+  $('#tpl-dup')?.addEventListener('click', async () => {
+    await Train.duplicateTemplate(st.tpl.id);
+    toast('Duplicated');
+    location.hash = '#/train';
+  });
+
+  $('#tpl-del')?.addEventListener('click', async () => {
+    if (!confirm(`Delete "${st.tpl.name}"? Logged sessions are kept.`)) return;
+    await Train.deleteTemplate(st.tpl.id);
+    toast('Deleted');
+    location.hash = '#/train';
+  });
+}
+
+/* ---------------- exercise picker ---------------- */
+function exPickRow(e) {
+  return `
+    <button class="pick" data-ex="${e.id}">
+      <div class="pick-main">
+        <div class="pick-name">${esc(e.name)}${e.custom ? ' <span class="tag">custom</span>' : ''}</div>
+        <div class="pick-sub">${Train.muscleLabel(e.muscle)} · ${esc(e.equipment)}${e.isCompound ? ' · compound' : ''}</div>
+      </div>
+      <div class="pick-k">${e.repMin}–${e.repMax}<b>reps</b></div>
+    </button>`;
+}
+
+async function paintExPicker() {
+  const st = App.tplState;
+  const rows = await Train.searchExercises(st.q, st.muscle);
+
+  $('#tpl-root').innerHTML = `
+    <button class="btn btn-sm btn-ghost" id="pick-back" style="margin-bottom:14px">
+      ‹ Back to workout</button>
+
+    <div class="searchbar">
+      <input id="ex-q" type="search" placeholder="Search exercises…"
+             value="${esc(st.q)}" autocomplete="off" enterkeyhint="search">
+      ${st.q ? `<button class="sb-clear" id="ex-clear">×</button>` : ''}
+    </div>
+
+    <div class="chips" style="margin-bottom:14px">
+      <button class="chip ${!st.muscle ? 'on' : ''}" data-m="">All</button>
+      ${Train.MUSCLES.map(m =>
+        `<button class="chip ${st.muscle === m.key ? 'on' : ''}" data-m="${m.key}">${m.label}</button>`
+      ).join('')}
+    </div>
+
+    <div id="ex-list">
+      ${rows.length
+        ? `<div class="picker">${rows.map(exPickRow).join('')}</div>`
+        : `<div class="empty"><h3>No matches</h3>
+             <p class="hint">Create it as a custom exercise below.</p></div>`}
+    </div>
+
+    <button class="btn btn-block btn-ghost" id="new-ex" style="margin-top:14px">
+      + Create custom exercise</button>`;
+
+  $('#pick-back').addEventListener('click', () => {
+    st.view = 'edit';
+    $('#screen-sub').textContent = 'Structure & progression';
+    paintTemplate();
+  });
+
+  $('#ex-q').addEventListener('input', async e => {
+    st.q = e.target.value;
+    const list = await Train.searchExercises(st.q, st.muscle);
+    $('#ex-list').innerHTML = list.length
+      ? `<div class="picker">${list.map(exPickRow).join('')}</div>`
+      : `<div class="empty"><h3>No matches</h3></div>`;
+    wireExRows();
+  });
+
+  $('#ex-clear')?.addEventListener('click', () => { st.q = ''; paintExPicker(); });
+
+  $$('[data-m]').forEach(b => b.addEventListener('click', () => {
+    st.muscle = b.dataset.m || null;
+    paintExPicker();
+  }));
+
+  $('#new-ex').addEventListener('click', () => { st.view = 'newex'; paintTemplate(); });
+
+  wireExRows();
+}
+
+function wireExRows() {
+  $$('[data-ex]').forEach(b => b.addEventListener('click', async () => {
+    const st = App.tplState;
+    const ex = await Train.getExercise(b.dataset.ex);
+    if (!ex) return;
+    st.tpl.slots.push({
+      exerciseId: ex.id,
+      exerciseName: ex.name,
+      sets: 3,
+      repMin: ex.repMin,
+      repMax: ex.repMax,
+      rir: 2,
+      restSec: ex.isCompound ? 150 : 90,
+      note: ''
+    });
+    st.view = 'edit';
+    tick();
+    $('#screen-sub').textContent = 'Structure & progression';
+    paintTemplate();
+  }));
+}
+
+/* ---------------- custom exercise form ---------------- */
+function paintNewExercise() {
+  const st = App.tplState;
+
+  $('#tpl-root').innerHTML = `
+    <button class="btn btn-sm btn-ghost" id="ne-back" style="margin-bottom:14px">
+      ‹ Back to exercises</button>
+
+    <form id="ne-form" class="card" onsubmit="return false">
+      <label class="field"><span>Exercise name</span>
+        <input name="name" data-type="text" placeholder="Smith machine row"></label>
+
+      <div class="field-row">
+        <label class="field"><span>Muscle</span>
+          <select name="muscle">
+            ${Train.MUSCLES.map(m => `<option value="${m.key}">${m.label}</option>`).join('')}
+          </select></label>
+        <label class="field"><span>Equipment</span>
+          <select name="equipment">
+            <option value="barbell">Barbell</option>
+            <option value="dumbbell">Dumbbell</option>
+            <option value="machine">Machine</option>
+            <option value="cable">Cable</option>
+            <option value="bodyweight">Bodyweight</option>
+          </select></label>
+      </div>
+
+      <div class="field-row">
+        <label class="field"><span>Rep min</span>
+          <input name="repMin" data-type="number" type="number" inputmode="numeric" value="8"></label>
+        <label class="field"><span>Rep max</span>
+          <input name="repMax" data-type="number" type="number" inputmode="numeric" value="12"></label>
+      </div>
+
+      <label class="seg-opt" id="ne-comp-wrap" style="margin-bottom:0">
+        <input type="checkbox" id="ne-comp" style="display:none">
+        <span class="dot"></span>
+        <span><b>Compound lift</b>
+          <small>Multi-joint. Gets bigger weight jumps: 2.5 kg instead of 1.25 kg.</small></span>
+      </label>
+
+      <button class="btn btn-primary btn-block" id="ne-save" style="margin-top:16px">
+        Create &amp; add</button>
+    </form>`;
+
+  $('#ne-back').addEventListener('click', () => { st.view = 'pick'; paintTemplate(); });
+
+  $('#ne-comp-wrap').addEventListener('click', () => {
+    setTimeout(() => $('#ne-comp-wrap').classList.toggle('on', $('#ne-comp').checked), 0);
+  });
+
+  $('#ne-save').addEventListener('click', async () => {
+    const v = readForm($('#ne-form'));
+    if (!v.name || !v.name.trim()) return toast('Name it first');
+    const ex = await Train.saveExercise({
+      name: v.name,
+      muscle: v.muscle,
+      equipment: v.equipment,
+      repMin: v.repMin || 8,
+      repMax: v.repMax || 12,
+      isCompound: $('#ne-comp').checked,
+      custom: true
+    });
+    st.tpl.slots.push({
+      exerciseId: ex.id,
+      exerciseName: ex.name,
+      sets: 3,
+      repMin: ex.repMin,
+      repMax: ex.repMax,
+      rir: 2,
+      restSec: ex.isCompound ? 150 : 90,
+      note: ''
+    });
+    st.view = 'edit';
+    toast('Added to library');
+    paintTemplate();
+  });
+}
+
 /** True when launched from the home screen icon (not in Safari). */
 function isStandalone() {
   return window.navigator.standalone === true ||
@@ -1561,7 +1881,8 @@ function render() {
   if (name !== 'food') App.lastDeleted = null;
 
   /* header */
-  $('#screen-title').textContent = screen.title;
+  $('#screen-title').textContent =
+    typeof screen.title === 'function' ? screen.title() : screen.title;
   const sub = screen.sub ? screen.sub() : '';
   $('#screen-sub').textContent = sub;
   $('#screen-sub').style.display = sub ? '' : 'none';
