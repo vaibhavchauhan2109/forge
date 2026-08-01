@@ -216,6 +216,7 @@ const Screens = {
   body: {
     title: 'Body',
     sub: () => 'Weight, composition & measurements',
+    action: () => `<a class="btn btn-sm btn-ghost" href="#/photos">Photos</a>`,
     render: () => `<div id="body-root"><div class="spinner">Loading…</div></div>`,
     async mount() { await paintBody(); }
   },
@@ -2852,6 +2853,290 @@ async function paintBody() {
   }));
 }
 
+/* ============================================================
+   PROGRESS PHOTOS
+   ============================================================ */
+
+/** Downscale + re-encode so a photo costs ~150 KB instead of 4 MB. */
+async function shrinkImage(file, max = 1280, quality = 0.82) {
+  let bmp = null;
+  try {
+    bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch {
+    try { bmp = await createImageBitmap(file); }
+    catch {
+      /* last resort: decode through an <img> */
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      bmp = img;
+    }
+  }
+  const iw = bmp.width, ih = bmp.height;
+  const scale = Math.min(1, max / Math.max(iw, ih));
+  const w = Math.round(iw * scale), h = Math.round(ih * scale);
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  cv.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  bmp.close?.();
+  const blob = await new Promise(r => cv.toBlob(r, 'image/jpeg', quality));
+  return { blob, w, h };
+}
+
+const Photos = {
+  async add(file, tag = 'front') {
+    const { blob, w, h } = await shrinkImage(file);
+    const row = {
+      id: Store.uid(), day: Store.dayKey(), ts: Date.now(),
+      blob, w, h, tag, size: blob.size
+    };
+    await Store.put('photos', row);
+    return row;
+  },
+  async all() {
+    return (await Store.all('photos'))
+      .sort((a, b) => b.day.localeCompare(a.day) || b.ts - a.ts);
+  },
+  get: id => Store.get('photos', id),
+  del: id => Store.del('photos', id)
+};
+
+/** Blob URLs must be revoked or they leak memory on every repaint. */
+function freePhotoUrls() {
+  (App.photoUrls || []).forEach(u => URL.revokeObjectURL(u));
+  App.photoUrls = [];
+}
+function photoUrl(blob) {
+  const u = URL.createObjectURL(blob);
+  (App.photoUrls ||= []).push(u);
+  return u;
+}
+
+Screens.photos = {
+  title: 'Progress photos', tab: 'body', back: '#/body',
+  sub: () => App.photoState?.view === 'compare' ? 'Pick two to compare' : 'Same pose, same light, same time of day',
+  render: () => `<div id="ph-root"><div class="spinner">Loading…</div></div>`,
+  async mount() {
+    App.photoState = { view: 'grid', id: null, pick: [] };
+    await paintPhotos();
+  }
+};
+
+async function paintPhotos() {
+  const st = App.photoState;
+  if (st.view === 'one')     return paintPhotoOne();
+  if (st.view === 'compare') return paintPhotoCompare();
+  return paintPhotoGrid();
+}
+
+async function paintPhotoGrid() {
+  freePhotoUrls();
+  const st = App.photoState;
+  const rows = await Photos.all();
+  const bytes = rows.reduce((a, r) => a + (r.size || 0), 0);
+
+  /* group by day */
+  const days = [];
+  rows.forEach(r => {
+    const g = days.find(d => d.day === r.day);
+    if (g) g.items.push(r); else days.push({ day: r.day, items: [r] });
+  });
+
+  $('#ph-root').innerHTML = `
+    <div class="card">
+      <div class="card-head"><p class="card-title">Add a photo</p>
+        <span class="tag">${rows.length} saved · ${(bytes / 1048576).toFixed(1)} MB</span></div>
+      <div class="chips" style="margin-bottom:12px">
+        ${['front', 'side', 'back'].map((t, i) =>
+          `<button class="chip ${i === 0 ? 'on' : ''}" data-tag="${t}">${t}</button>`).join('')}
+      </div>
+      <button class="btn btn-primary btn-block" id="ph-add">Take or choose photo</button>
+      <input type="file" id="ph-file" accept="image/*" hidden>
+      <p class="hint" style="margin-top:10px;font-size:12px">
+        Photos are resized to 1280 px and stay on this phone only — they are
+        <strong>not</strong> included in the JSON backup, so keep the originals in your camera roll.</p>
+    </div>
+
+    ${rows.length >= 2 ? `
+      <button class="btn btn-block btn-ghost" id="ph-cmp" style="margin-bottom:14px">
+        Compare two photos</button>` : ''}
+
+    ${days.length ? days.map(g => `
+      <div style="margin-bottom:16px">
+        <p class="card-title" style="margin:0 0 8px 4px">${dayLabel(g.day)} · ${fmtDate(g.day)}</p>
+        <div class="pgrid">
+          ${g.items.map(p => `
+            <div class="pcell" data-open="${p.id}">
+              <img src="${photoUrl(p.blob)}" alt="${p.tag}" loading="lazy">
+              <div class="pday">${p.tag}</div>
+            </div>`).join('')}
+        </div>
+      </div>`).join('')
+    : `<div class="empty"><h3>No photos yet</h3>
+         <p class="hint">Front, side and back every 2 weeks. Photos show changes
+         the scale completely hides.</p></div>`}`;
+
+  let tag = 'front';
+  $$('[data-tag]').forEach(b => b.addEventListener('click', () => {
+    tag = b.dataset.tag;
+    $$('[data-tag]').forEach(x => x.classList.toggle('on', x === b));
+  }));
+
+  $('#ph-add').addEventListener('click', () => $('#ph-file').click());
+
+  $('#ph-file').addEventListener('change', async e => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    $('#ph-add').textContent = 'Processing…';
+    try {
+      await Photos.add(f, tag);
+      tick();
+      toast('Photo saved');
+      await paintPhotos();
+    } catch (err) {
+      toast('Could not read that image');
+      $('#ph-add').textContent = 'Take or choose photo';
+    }
+  });
+
+  $('#ph-cmp')?.addEventListener('click', () => {
+    st.view = 'compare'; st.pick = [];
+    $('#screen-sub').textContent = 'Pick two to compare';
+    paintPhotos();
+  });
+
+  $$('[data-open]').forEach(c => c.addEventListener('click', () => {
+    st.id = c.dataset.open; st.view = 'one';
+    paintPhotos();
+  }));
+}
+
+async function paintPhotoOne() {
+  freePhotoUrls();
+  const st = App.photoState;
+  const p = await Photos.get(st.id);
+  if (!p) { st.view = 'grid'; return paintPhotos(); }
+  const metric = await Store.get('metrics', p.day);
+
+  $('#ph-root').innerHTML = `
+    <button class="btn btn-sm btn-ghost" id="ph-back" style="margin-bottom:14px">‹ All photos</button>
+    <img class="pbig" src="${photoUrl(p.blob)}" alt="${p.tag}">
+    <div class="card" style="margin-top:14px">
+      ${kv('Date', fmtDate(p.day))}
+      ${kv('View', p.tag)}
+      ${kv('Weight that day', metric?.weightKg ? Calc.r(metric.weightKg, 1) + ' kg' : '—')}
+      ${kv('Body fat that day', metric?.bodyFatPct != null ? Calc.r(metric.bodyFatPct, 1) + '%' : '—')}
+      ${kv('Waist that day', metric?.waistCm ? Calc.r(metric.waistCm, 1) + ' cm' : '—')}
+      ${kv('File size', Math.round((p.size || 0) / 1024) + ' KB')}
+    </div>
+    <button class="btn btn-block" id="ph-share" style="margin-top:14px">Save to Photos / share</button>
+    <button class="btn btn-block btn-danger" id="ph-del" style="margin-top:8px">Delete photo</button>`;
+
+  $('#ph-back').addEventListener('click', () => {
+    st.view = 'grid'; st.id = null; paintPhotos();
+  });
+
+  $('#ph-share').addEventListener('click', async () => {
+    try {
+      const file = new File([p.blob], `forge-${p.day}-${p.tag}.jpg`, { type: 'image/jpeg' });
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: `Progress ${p.day}` });
+      } else {
+        const a = document.createElement('a');
+        a.href = photoUrl(p.blob);
+        a.download = file.name;
+        document.body.appendChild(a); a.click(); a.remove();
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') toast('Share failed');
+    }
+  });
+
+  $('#ph-del').addEventListener('click', async () => {
+    if (!confirm('Delete this photo permanently?')) return;
+    await Photos.del(p.id);
+    st.view = 'grid'; st.id = null;
+    toast('Deleted');
+    paintPhotos();
+  });
+}
+
+async function paintPhotoCompare() {
+  freePhotoUrls();
+  const st = App.photoState;
+  const rows = await Photos.all();
+
+  const chosen = st.pick.map(id => rows.find(r => r.id === id)).filter(Boolean);
+  let compareHTML = '';
+
+  if (chosen.length === 2) {
+    /* oldest on the left */
+    const [a, b] = chosen.slice().sort((x, y) => x.day.localeCompare(y.day));
+    const [ma, mb] = await Promise.all([Store.get('metrics', a.day), Store.get('metrics', b.day)]);
+    const dw = (ma?.weightKg != null && mb?.weightKg != null)
+      ? mb.weightKg - ma.weightKg : null;
+    const dbf = (ma?.bodyFatPct != null && mb?.bodyFatPct != null)
+      ? mb.bodyFatPct - ma.bodyFatPct : null;
+    const gap = Store.daysBetween(a.day, b.day);
+
+    compareHTML = `
+      <div class="card" style="margin-bottom:14px">
+        <div class="pcompare">
+          <figure><img src="${photoUrl(a.blob)}" alt="before">
+            <figcaption>${fmtDate(a.day)}<br>${ma?.weightKg ? Calc.r(ma.weightKg, 1) + ' kg' : '—'}</figcaption></figure>
+          <figure><img src="${photoUrl(b.blob)}" alt="after">
+            <figcaption>${fmtDate(b.day)}<br>${mb?.weightKg ? Calc.r(mb.weightKg, 1) + ' kg' : '—'}</figcaption></figure>
+        </div>
+        <div style="margin-top:14px">
+          ${kv('Days apart', gap)}
+          ${dw != null ? kv('Weight change', (dw >= 0 ? '+' : '') + Calc.r(dw, 1) + ' kg',
+                            dw < 0 ? 'good' : 'warn') : ''}
+          ${dbf != null ? kv('Body fat change', (dbf >= 0 ? '+' : '') + Calc.r(dbf, 1) + '%',
+                             dbf < 0 ? 'good' : 'warn') : ''}
+        </div>
+        <button class="btn btn-sm btn-block btn-ghost" id="cmp-reset" style="margin-top:12px">
+          Pick different photos</button>
+      </div>`;
+  }
+
+  $('#ph-root').innerHTML = `
+    <button class="btn btn-sm btn-ghost" id="cmp-back" style="margin-bottom:14px">‹ All photos</button>
+    ${compareHTML}
+    ${chosen.length < 2 ? `
+      <p class="hint" style="margin-bottom:10px">
+        Tap ${chosen.length === 0 ? 'the first' : 'the second'} photo
+        (${chosen.length}/2 selected).</p>` : ''}
+    <div class="pgrid">
+      ${rows.map(p => {
+        const i = st.pick.indexOf(p.id);
+        return `
+        <div class="pcell ${i > -1 ? 'sel' : ''}" data-pick="${p.id}">
+          <img src="${photoUrl(p.blob)}" alt="${p.tag}" loading="lazy">
+          ${i > -1 ? `<div class="pnum">${i + 1}</div>` : ''}
+          <div class="pday">${fmtDate(p.day).replace(/\s\d{4}$/, '')}</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+
+  $('#cmp-back').addEventListener('click', () => {
+    st.view = 'grid'; st.pick = [];
+    $('#screen-sub').textContent = 'Same pose, same light, same time of day';
+    paintPhotos();
+  });
+
+  $('#cmp-reset')?.addEventListener('click', () => { st.pick = []; paintPhotos(); });
+
+  $$('[data-pick]').forEach(c => c.addEventListener('click', () => {
+    const id = c.dataset.pick;
+    const i = st.pick.indexOf(id);
+    if (i > -1) st.pick.splice(i, 1);
+    else if (st.pick.length < 2) st.pick.push(id);
+    else st.pick = [st.pick[1], id];
+    paintPhotos();
+  }));
+}
+
 /** True when launched from the home screen icon (not in Safari). */
 function isStandalone() {
   return window.navigator.standalone === true ||
@@ -2872,6 +3157,7 @@ function render() {
   App.route = name;
   if (name !== 'food') App.lastDeleted = null;
   if (name !== 'session') stopRest();
+  if (name !== 'photos') freePhotoUrls();
 
   /* header */
   $('#screen-title').textContent =
