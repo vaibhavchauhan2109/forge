@@ -445,3 +445,15 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
   letter-spacing:.5px;padding:3px 7px;border-radius:99px;text-transform:uppercase;
 }
 .session-sum{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.slot{border-bottom:1px solid var(--line);padding:12px}
+.slot:last-child{border-bottom:0}
+.slot-top{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.slot-name{font-size:15px;font-weight:700;flex:1;min-width:0}
+.slot-grid{display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1.35fr;gap:6px}
+.slot-grid label{display:block;font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;
+  color:var(--dim);margin-bottom:3px;text-align:center}
+.slot-grid input,.slot-grid select{padding:8px 2px;text-align:center;font-size:15px;border-radius:9px}
+.iconbtn{appearance:none;border:0;background:var(--surface-2);color:var(--dim);
+  width:30px;height:30px;border-radius:8px;font-size:15px;cursor:pointer;flex-shrink:0}
+.iconbtn:active{opacity:.55}
+.iconbtn.danger{color:var(--danger)}
