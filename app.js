@@ -215,12 +215,9 @@ const Screens = {
   /* ---------------- BODY ---------------- */
   body: {
     title: 'Body',
-    sub: () => 'Weight, BMI & measurements',
-    render: () => `
-      <div class="empty">
-        <h3>Body metrics</h3>
-        <p class="hint">Coming in Phase 5: weight trend, BMI, waist-to-height, progress photos.</p>
-      </div>`
+    sub: () => 'Weight, composition & measurements',
+    render: () => `<div id="body-root"><div class="spinner">Loading…</div></div>`,
+    async mount() { await paintBody(); }
   },
 
   /* ---------------- MORE / SETTINGS ---------------- */
@@ -2563,6 +2560,297 @@ Screens.exercise = {
     }));
   }
 };
+
+/* ============================================================
+   BODY METRICS — engine + screen
+   ============================================================ */
+
+/** All metric rows, oldest first. */
+async function allMetrics() {
+  return (await Store.all('metrics')).sort((a, b) => a.day.localeCompare(b.day));
+}
+
+/**
+ * Exponential moving average. Raw scale weight swings ±1.5 kg on water alone,
+ * so the smoothed line is the only number worth reacting to.
+ */
+function emaSeries(values, alpha = 0.2) {
+  let prev = null;
+  return values.map(v => {
+    if (v == null) return prev;
+    prev = prev == null ? v : alpha * v + (1 - alpha) * prev;
+    return prev;
+  });
+}
+
+/** Least-squares slope per day over [{x:dayIndex, y:value}]. */
+function slopePerDay(points) {
+  const n = points.length;
+  if (n < 2) return 0;
+  const mx = points.reduce((a, p) => a + p.x, 0) / n;
+  const my = points.reduce((a, p) => a + p.y, 0) / n;
+  let num = 0, den = 0;
+  points.forEach(p => { num += (p.x - mx) * (p.y - my); den += (p.x - mx) ** 2; });
+  return den ? num / den : 0;
+}
+
+/** Current smoothed weight and the trend over the last `window` days. */
+function trendSummary(metrics, key = 'weightKg', window = 21) {
+  const rows = metrics.filter(m => m[key] != null);
+  if (!rows.length) return null;
+  const smooth = emaSeries(rows.map(m => m[key]));
+  const first = rows[0].day;
+  const pts = rows.map((m, i) => ({ x: Store.daysBetween(first, m.day), y: smooth[i] }));
+  const recent = pts.filter(p => p.x >= (pts[pts.length - 1].x - window));
+  const perDay = slopePerDay(recent);
+  return {
+    latest: rows[rows.length - 1][key],
+    latestDay: rows[rows.length - 1].day,
+    smooth: smooth[smooth.length - 1],
+    perWeek: perDay * 7,
+    entries: rows.length,
+    firstDay: first,
+    rows, smoothArr: smooth
+  };
+}
+
+/** Multi-series line chart, no dependencies. */
+function lineChart(series, { h = 110 } = {}) {
+  const all = series.flatMap(s => s.values.filter(v => v != null));
+  if (all.length < 2) return `<p class="hint">Log at least two entries to see a chart.</p>`;
+  const min = Math.min(...all), max = Math.max(...all);
+  const span = (max - min) || 1;
+  const w = 300;
+  const n = Math.max(...series.map(s => s.values.length));
+  const X = i => (i / (n - 1 || 1)) * w;
+  const Y = v => h - ((v - min) / span) * (h - 12) - 6;
+
+  const body = series.map(s => {
+    const pts = s.values.map((v, i) => v == null ? null : `${X(i).toFixed(1)},${Y(v).toFixed(1)}`)
+                        .filter(Boolean).join(' ');
+    if (!pts) return '';
+    const area = s.fill
+      ? `<polygon points="0,${h} ${pts} ${w},${h}" fill="${s.color}" opacity="0.10"/>` : '';
+    return area + `<polyline points="${pts}" fill="none" stroke="${s.color}"
+      stroke-width="${s.width || 2.5}" ${s.dash ? 'stroke-dasharray="4 5"' : ''}
+      stroke-linecap="round" stroke-linejoin="round"/>`;
+  }).join('');
+
+  return `
+    <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none"
+         style="display:block;overflow:visible">${body}</svg>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-top:6px">
+      <span>low ${Calc.r(min, 1)}</span><span>high ${Calc.r(max, 1)}</span>
+    </div>`;
+}
+
+/* ---------------- the screen ---------------- */
+async function paintBody() {
+  const root = $('#body-root');
+  if (!root) return;
+
+  const range = App.bodyRange ?? 90;
+  const all = await allMetrics();
+  const cutoff = range ? Store.addDays(Store.dayKey(), -range) : '0000-00-00';
+  const metrics = all.filter(m => m.day >= cutoff);
+
+  const wt = trendSummary(metrics, 'weightKg');
+  const bf = trendSummary(metrics, 'bodyFatPct');
+  const ws = trendSummary(metrics, 'waistCm');
+  const s = Store.s;
+  const today = Store.dayKey();
+  const todayRow = all.find(m => m.day === today);
+
+  const rateTone = !wt ? 'dim'
+    : Math.abs(wt.perWeek) < 0.1 ? 'dim'
+    : (s.goalMode === 'leanBulk' ? (wt.perWeek > 0 ? 'good' : 'warn')
+                                 : (wt.perWeek < 0 ? 'good' : 'warn'));
+
+  /* ---- quick log ---- */
+  const quickLog = `
+    <div class="card">
+      <div class="card-head"><p class="card-title">Log for today</p>
+        <span class="tag">${todayRow ? 'logged' : 'not logged'}</span></div>
+      <div class="field-row">
+        <label class="field" style="margin-bottom:0"><span>Weight (kg)</span>
+          <input id="q-weight" type="number" inputmode="decimal" step="0.1"
+                 value="${todayRow?.weightKg ?? ''}" placeholder="${s.weightKg ?? '80'}"></label>
+        <label class="field" style="margin-bottom:0"><span>Waist (cm)</span>
+          <input id="q-waist" type="number" inputmode="decimal" step="0.5"
+                 value="${todayRow?.waistCm ?? ''}" placeholder="optional"></label>
+      </div>
+      <button class="btn btn-primary btn-block" id="q-save" style="margin-top:14px">
+        ${todayRow ? 'Update today' : 'Save'}</button>
+      <p class="hint" style="margin-top:10px;font-size:12px">
+        Weigh in first thing, after the toilet, before food or water. Same conditions every time.</p>
+    </div>`;
+
+  /* ---- weight trend ---- */
+  const weightCard = `
+    <div class="card">
+      <div class="card-head"><p class="card-title">Weight trend</p>
+        <div class="chips">
+          ${[30, 90, 0].map(r =>
+            `<button class="chip ${range === r ? 'on' : ''}" data-range="${r}">${r || 'All'}</button>`
+          ).join('')}
+        </div>
+      </div>
+      ${wt ? `
+        <div style="display:flex;align-items:flex-end;gap:14px;margin-bottom:14px">
+          <div>
+            <div style="font-size:34px;font-weight:800;letter-spacing:-1px;line-height:1">
+              ${Calc.r(wt.smooth, 1)}<span style="font-size:16px;color:var(--dim)"> kg</span>
+            </div>
+            <div style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">
+              smoothed trend</div>
+          </div>
+          <div style="margin-left:auto;text-align:right">
+            <div class="tone-${rateTone}" style="font-size:20px;font-weight:800;font-variant-numeric:tabular-nums">
+              ${wt.perWeek >= 0 ? '+' : ''}${Calc.r(wt.perWeek, 2)} kg</div>
+            <div style="font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">
+              per week</div>
+          </div>
+        </div>
+
+        ${lineChart([
+          { values: wt.rows.map(r => r.weightKg), color: 'var(--dim)', width: 1.5 },
+          { values: wt.smoothArr, color: 'var(--accent)', width: 3, fill: true }
+        ])}
+
+        <div style="margin-top:14px">
+          ${kv('Last weigh-in', Calc.r(wt.latest, 1) + ' kg · ' + dayLabel(wt.latestDay))}
+          ${kv('Entries in range', wt.entries)}
+          ${kv('Rate as % bodyweight', Calc.r((wt.perWeek / (wt.smooth || 1)) * 100, 2) + '% / week',
+               rateTone)}
+        </div>
+
+        <p class="hint" style="margin-top:12px;font-size:12px">
+          Grey is raw scale weight, orange is the smoothed trend. Judge progress on orange only —
+          daily swings of ±1.5 kg are water and food, not fat.</p>
+      ` : `<p class="hint">No weigh-ins in this range yet.</p>`}
+    </div>`;
+
+  /* ---- composition ---- */
+  const sm = Calc.summary(s);
+  const compCard = `
+    <div class="card">
+      <div class="card-head"><p class="card-title">Composition</p>
+        <a href="#/measure" style="color:var(--accent);font-size:13px;font-weight:700">Full measure ›</a></div>
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-value">${sm.bodyFat ?? '—'}<span style="font-size:13px">%</span></div>
+          <div class="stat-label">body fat</div></div>
+        <div class="stat"><div class="stat-value">${sm.leanMass ?? '—'}</div>
+          <div class="stat-label">lean kg</div></div>
+        <div class="stat"><div class="stat-value">${sm.fatMass ?? '—'}</div>
+          <div class="stat-label">fat kg</div></div>
+      </div>
+      ${bf && bf.entries > 1 ? `
+        <div style="margin-top:16px">
+          ${lineChart([{ values: bf.smoothArr, color: 'var(--protein)', width: 3, fill: true }])}
+          <div style="margin-top:10px">
+            ${kv('Body fat trend', (bf.perWeek >= 0 ? '+' : '') + Calc.r(bf.perWeek, 2) + '% / week',
+                 bf.perWeek < 0 ? 'good' : 'warn')}
+          </div>
+        </div>` : `<p class="hint" style="margin-top:12px">
+            Log waist and neck twice or more to see a body-fat trend.</p>`}
+      <div style="margin-top:14px">
+        ${kv('BMI', sm.bmi ?? '—', sm.bmiCat.tone)}
+        ${kv('Waist-to-height', sm.whtr ?? '—', sm.whtrCat.tone)}
+        ${kv('Rating', sm.whtrCat.label, sm.whtrCat.tone)}
+      </div>
+    </div>`;
+
+  /* ---- measurements ---- */
+  const firstWaist = ws?.rows[0];
+  const lastWaist = ws?.rows[ws.rows.length - 1];
+  const waistDelta = (firstWaist && lastWaist && ws.rows.length > 1)
+    ? lastWaist.waistCm - firstWaist.waistCm : null;
+
+  const measureCard = `
+    <div class="card">
+      <div class="card-head"><p class="card-title">Measurements</p></div>
+      ${kv('Waist', s.waistCm ? s.waistCm + ' cm' : '—')}
+      ${kv('Neck', s.neckCm ? s.neckCm + ' cm' : '—')}
+      ${s.sex === 'female' ? kv('Hip', s.hipCm ? s.hipCm + ' cm' : '—') : ''}
+      ${waistDelta != null
+        ? kv('Waist change in range',
+             (waistDelta >= 0 ? '+' : '') + Calc.r(waistDelta, 1) + ' cm',
+             waistDelta < 0 ? 'good' : 'warn')
+        : ''}
+      ${ws && ws.entries > 1 ? `<div style="margin-top:14px">${
+        lineChart([{ values: ws.smoothArr, color: 'var(--carb)', width: 3, fill: true }])
+      }</div>` : ''}
+      <p class="hint" style="margin-top:12px;font-size:12px">
+        Waist shrinking while weight holds steady is recomposition — the best possible signal.</p>
+    </div>`;
+
+  /* ---- history ---- */
+  const hist = all.slice().reverse().slice(0, 40);
+  const histCard = `
+    <div class="card" style="padding:0">
+      <div class="card-head" style="padding:16px 16px 10px;margin:0">
+        <p class="card-title">History</p><span class="tag">${all.length} entries</span></div>
+      ${hist.length ? hist.map(m => `
+        <div class="fentry">
+          <div class="fentry-main">
+            <div class="fentry-name">${dayLabel(m.day)}</div>
+            <div class="fentry-sub">${[
+              m.weightKg != null ? Calc.r(m.weightKg, 1) + ' kg' : null,
+              m.waistCm != null ? 'waist ' + Calc.r(m.waistCm, 1) : null,
+              m.neckCm != null ? 'neck ' + Calc.r(m.neckCm, 1) : null,
+              m.bodyFatPct != null ? Calc.r(m.bodyFatPct, 1) + '% bf' : null
+            ].filter(Boolean).join(' · ') || 'empty'}</div>
+          </div>
+          <button class="fentry-del" data-delm="${m.day}" aria-label="Delete">×</button>
+        </div>`).join('')
+      : `<div class="meal-empty">Nothing logged yet</div>`}
+    </div>`;
+
+  root.innerHTML = `<div class="stack">
+    ${quickLog}${weightCard}${compCard}${measureCard}${histCard}
+  </div>`;
+
+  /* ---------------- wiring ---------------- */
+
+  $$('[data-range]').forEach(b => b.addEventListener('click', () => {
+    App.bodyRange = Number(b.dataset.range);
+    paintBody();
+  }));
+
+  $('#q-save').addEventListener('click', async () => {
+    const w = Number($('#q-weight').value);
+    const waist = $('#q-waist').value === '' ? null : Number($('#q-waist').value);
+    if (!w && waist == null) return toast('Enter a weight or waist measurement');
+
+    const row = (await Store.get('metrics', today)) || { day: today };
+    if (w) row.weightKg = w;
+    if (waist != null) row.waistCm = waist;
+
+    /* recompute body fat from whatever we now know */
+    const merged = { ...s, weightKg: row.weightKg ?? s.weightKg,
+                     waistCm: row.waistCm ?? s.waistCm };
+    const est = Calc.bodyFat(merged);
+    if (est.pct != null) row.bodyFatPct = Calc.r(est.pct, 1);
+
+    await Store.put('metrics', row);
+
+    /* keep the live profile in sync so targets recalculate */
+    const patch = {};
+    if (w) patch.weightKg = w;
+    if (waist != null) patch.waistCm = waist;
+    if (Object.keys(patch).length) Store.set(patch);
+
+    tick();
+    toast('Logged');
+    await paintBody();
+  });
+
+  $$('[data-delm]').forEach(b => b.addEventListener('click', async () => {
+    if (!confirm('Delete this entry?')) return;
+    await Store.del('metrics', b.dataset.delm);
+    await paintBody();
+  }));
+}
 
 /** True when launched from the home screen icon (not in Safari). */
 function isStandalone() {
