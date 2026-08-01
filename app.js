@@ -264,6 +264,14 @@ const Screens = {
             </div>
             <div class="row-value chev"></div>
           </a>
+
+          <a class="row" href="#/exercises">
+            <div class="row-main">
+              <div class="row-title">Exercise history</div>
+              <div class="row-sub">Personal records and progress trends</div>
+            </div>
+            <div class="row-value chev"></div>
+          </a>
         </div>
 
         <div class="card">
@@ -1035,6 +1043,11 @@ async function paintToday() {
   const totals = await Food.dayTotals(day);
   const sm     = Calc.summary(Store.s);
   const streak = await logStreak();
+  const [activeSess, tpls, lastSess] = await Promise.all([
+    Train.getActive(), Train.allTemplates(), Train.recentSessions(1)
+  ]);
+  const dowT = new Date().getDay();
+  const todayTpl = tpls.find(t => t.dayHint === dowT);
   const hour   = new Date().getHours();
 
   const kTar  = t ? t.kcal : 0;
@@ -1118,10 +1131,31 @@ async function paintToday() {
     </div>`;
 
   /* ---- training placeholder ---- */
+  const last = lastSess[0];
   const training = `
     <div class="card">
-      <div class="card-head"><p class="card-title">Training</p><span class="tag">Phase 4</span></div>
-      <p class="hint">Planner and session logger coming next.</p>
+      <div class="card-head">
+        <p class="card-title">Training</p>
+        <a href="#/train" style="color:var(--accent);font-size:13px;font-weight:700">Open ›</a>
+      </div>
+      ${activeSess ? `
+        <div class="tpl-name">${esc(activeSess.name)}</div>
+        <div class="tpl-sub" style="margin-bottom:12px">
+          In progress · ${(activeSess.sets || []).filter(x => !x.warmup).length} sets logged</div>
+        <a class="btn btn-primary btn-block" href="#/session">Resume session</a>
+      ` : todayTpl ? `
+        <div class="tpl-name">${esc(todayTpl.name)}</div>
+        <div class="tpl-sub" style="margin-bottom:12px">
+          Scheduled for ${DOW[dowT]} · ${todayTpl.slots.length} exercises ·
+          ${todayTpl.slots.reduce((n, x) => n + x.sets, 0)} sets</div>
+        <button class="btn btn-primary btn-block" id="t-start" data-tpl="${todayTpl.id}">
+          Start ${esc(todayTpl.name)}</button>
+      ` : `
+        <p class="hint" style="margin-bottom:12px">
+          Rest day — nothing scheduled for ${DOW[dowT]}.${
+          last ? ` Last session: ${esc(last.name)}, ${dayLabel(last.day)}.` : ''}</p>
+        <a class="btn btn-block btn-ghost" href="#/train">Choose a workout</a>
+      `}
     </div>`;
 
   /* ---- habits ---- */
@@ -1144,6 +1178,12 @@ async function paintToday() {
   $('#quick-log')?.addEventListener('click', () => {
     App.addCtx = { day: Store.dayKey(), meal: smartMeal() };
     location.hash = '#/add';
+  });
+
+  $('#t-start')?.addEventListener('click', async () => {
+    const tpl = await Train.getTemplate($('#t-start').dataset.tpl);
+    await Train.startSession(tpl);
+    location.hash = '#/session';
   });
 }
 
@@ -2258,6 +2298,271 @@ function paintSessionDone() {
 
   $('#done-btn').addEventListener('click', () => { location.hash = '#/train'; });
 }
+
+/* ============================================================
+   SPARKLINE (reused in Phase 5)
+   ============================================================ */
+function sparkline(values, { h = 56, color = 'var(--accent)', fill = true } = {}) {
+  if (!values || values.length < 2) return '';
+  const w = 300;
+  const min = Math.min(...values), max = Math.max(...values);
+  const span = (max - min) || 1;
+  const pt = (v, i) => {
+    const x = (i / (values.length - 1)) * w;
+    const y = h - ((v - min) / span) * (h - 6) - 3;
+    return [x, y];
+  };
+  const pts = values.map(pt).map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const area = fill
+    ? `<polygon points="0,${h} ${pts} ${w},${h}" fill="${color}" opacity="0.12"/>` : '';
+  return `
+    <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none"
+         style="display:block;overflow:visible">
+      ${area}
+      <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`;
+}
+
+/* ============================================================
+   SESSION HISTORY DETAIL
+   ============================================================ */
+Screens.history = {
+  title: () => App.histSession?.name || 'Session',
+  tab: 'train', back: '#/train',
+  sub: () => App.histSession ? dayLabel(App.histSession.day) : '',
+  render: () => `<div id="hist-root"><div class="spinner">Loading…</div></div>`,
+  async mount() {
+    const s = await Train.getSession(App.sessionId);
+    if (!s) { toast('Session not found'); location.hash = '#/train'; return; }
+    App.histSession = s;
+    $('#screen-title').textContent = s.name;
+    $('#screen-sub').textContent = dayLabel(s.day);
+    paintHistory();
+  }
+};
+
+function paintHistory() {
+  const s = App.histSession;
+  const stats = sessionStats(s);
+
+  /* group sets by exercise, in the order they were performed */
+  const order = [];
+  const groups = {};
+  (s.sets || []).forEach(x => {
+    if (!groups[x.exerciseId]) { groups[x.exerciseId] = []; order.push(x.exerciseId); }
+    groups[x.exerciseId].push(x);
+  });
+
+  $('#hist-root').innerHTML = `
+    <div class="stack">
+      <div class="card">
+        <div class="stat-grid">
+          <div class="stat"><div class="stat-value">${stats.sets}</div><div class="stat-label">sets</div></div>
+          <div class="stat"><div class="stat-value">${fmtDur(s.durationSec)}</div><div class="stat-label">time</div></div>
+          <div class="stat"><div class="stat-value">${stats.kg.toLocaleString()}</div><div class="stat-label">kg</div></div>
+        </div>
+        ${s.notes ? `<div style="margin-top:14px">${kv('Notes', esc(s.notes))}</div>` : ''}
+      </div>
+
+      ${order.map(exId => {
+        const sets = groups[exId];
+        const workSets = sets.filter(x => !x.warmup);
+        const best = workSets.length ? Math.max(...workSets.map(Train.setScore)) : 0;
+        return `
+        <div class="exblock">
+          <div class="exhead">
+            <div class="exhead-top">
+              <div>
+                <div class="exname">${esc(sets[0].exerciseName)}</div>
+                <div class="exmeta">${workSets.length} working sets${
+                  best && workSets.some(x => x.weightKg > 0)
+                    ? ' · best e1RM ' + Math.round(best * 10) / 10 + ' kg' : ''}</div>
+              </div>
+              <button class="btn btn-sm btn-ghost" data-exview="${exId}">Trend</button>
+            </div>
+          </div>
+          ${sets.map((x, i) => `
+            <div class="setrow ${x.warmup ? 'warmup' : ''}" style="grid-template-columns:26px 1fr">
+              <span class="setnum">${x.warmup ? 'W' : i + 1}</span>
+              <span style="font-size:15px">
+                ${x.weightKg ? Calc.r(x.weightKg, 2) + ' kg × ' : ''}${x.reps} reps${
+                  x.rir != null ? ' · RIR ' + x.rir : ''}</span>
+            </div>`).join('')}
+        </div>`;
+      }).join('')}
+
+      <button class="btn btn-block btn-primary" id="repeat">Repeat this workout</button>
+      <button class="btn btn-block btn-danger" id="del-sess">Delete session</button>
+    </div>`;
+
+  $$('[data-exview]').forEach(b => b.addEventListener('click', () => {
+    App.exId = b.dataset.exview;
+    location.hash = '#/exercise';
+  }));
+
+  $('#repeat').addEventListener('click', async () => {
+    const existing = await Train.getActive();
+    if (existing && !confirm('Discard the session in progress and start this one?')) return;
+    const { byId } = await Train.exerciseMap();
+    const plan = order.map(exId => {
+      const ex = byId[exId];
+      const sets = groups[exId].filter(x => !x.warmup);
+      return {
+        exerciseId: exId,
+        exerciseName: groups[exId][0].exerciseName,
+        sets: Math.max(1, sets.length),
+        repMin: ex?.repMin ?? 8,
+        repMax: ex?.repMax ?? 12,
+        rir: sets[0]?.rir ?? 2,
+        restSec: ex?.isCompound ? 150 : 90,
+        note: ''
+      };
+    });
+    const fresh = await Train.startSession({ id: null, name: s.name, slots: plan });
+    fresh.name = s.name;
+    await Train.setActive(fresh);
+    location.hash = '#/session';
+  });
+
+  $('#del-sess').addEventListener('click', async () => {
+    if (!confirm('Delete this session permanently?')) return;
+    await Train.deleteSession(s.id);
+    toast('Deleted');
+    location.hash = '#/train';
+  });
+}
+
+/* ============================================================
+   EXERCISE LIST + PROGRESS
+   ============================================================ */
+async function exerciseHistory(exId) {
+  const sessions = await Train.allSessions();
+  const out = [];
+  sessions.forEach(s => {
+    const sets = (s.sets || []).filter(x => x.exerciseId === exId && !x.warmup);
+    if (sets.length) out.push({
+      day: s.day, sessionId: s.id, sets,
+      best: Math.max(...sets.map(Train.setScore)),
+      topWeight: Math.max(...sets.map(x => x.weightKg || 0)),
+      volume: sets.reduce((a, x) => a + (x.weightKg || 0) * (x.reps || 0), 0)
+    });
+  });
+  return out;                     // newest first
+}
+
+Screens.exercises = {
+  title: 'Exercise history', tab: 'settings', back: '#/settings',
+  sub: () => 'Personal records & progress',
+  render: () => `<div id="exs-root"><div class="spinner">Loading…</div></div>`,
+  async mount() { App.exsQ = ''; await paintExerciseList(); }
+};
+
+async function paintExerciseList() {
+  const [sessions, { byId }] = await Promise.all([Train.allSessions(), Train.exerciseMap()]);
+
+  const seen = {};
+  sessions.forEach(s => (s.sets || []).filter(x => !x.warmup).forEach(x => {
+    const e = seen[x.exerciseId] ||= { id: x.exerciseId, name: x.exerciseName, last: s.day, best: 0, sets: 0 };
+    e.best = Math.max(e.best, Train.setScore(x));
+    e.sets++;
+  }));
+
+  const needle = (App.exsQ || '').toLowerCase();
+  const rows = Object.values(seen)
+    .filter(e => !needle || e.name.toLowerCase().includes(needle))
+    .sort((a, b) => b.last.localeCompare(a.last));
+
+  $('#exs-root').innerHTML = `
+    <div class="searchbar">
+      <input id="exs-q" type="search" placeholder="Search…" value="${esc(App.exsQ || '')}"
+             autocomplete="off">
+    </div>
+    ${rows.length ? `<div class="picker">${rows.map(e => `
+      <button class="pick" data-open="${e.id}">
+        <div class="pick-main">
+          <div class="pick-name">${esc(e.name)}</div>
+          <div class="pick-sub">${Train.muscleLabel(byId[e.id]?.muscle || '')} · last ${dayLabel(e.last)} · ${e.sets} sets</div>
+        </div>
+        <div class="pick-k">${Math.round(e.best * 10) / 10}<b>best</b></div>
+      </button>`).join('')}</div>`
+    : `<div class="empty"><h3>Nothing logged yet</h3>
+         <p class="hint">Complete a workout and your lifts will appear here.</p></div>`}`;
+
+  $('#exs-q').addEventListener('input', e => { App.exsQ = e.target.value; paintExerciseList(); });
+  $$('[data-open]').forEach(b => b.addEventListener('click', () => {
+    App.exId = b.dataset.open;
+    location.hash = '#/exercise';
+  }));
+}
+
+Screens.exercise = {
+  title: () => App.exName || 'Exercise',
+  tab: 'settings', back: '#/exercises',
+  sub: () => 'Progress & records',
+  render: () => `<div id="ex-root"><div class="spinner">Loading…</div></div>`,
+  async mount() {
+    const ex = await Train.getExercise(App.exId);
+    App.exName = ex?.name || 'Exercise';
+    $('#screen-title').textContent = App.exName;
+    const hist = await exerciseHistory(App.exId);
+    const best = await Train.bestFor(App.exId);
+    const trend = hist.slice().reverse().map(h => h.best);
+    const weighted = hist.some(h => h.topWeight > 0);
+
+    $('#ex-root').innerHTML = `
+      <div class="stack">
+
+        <div class="card">
+          <div class="card-head"><p class="card-title">Records</p>
+            ${ex ? `<span class="tag">${Train.muscleLabel(ex.muscle)}</span>` : ''}</div>
+          ${best ? `
+            ${kv('Best ' + (weighted ? 'e1RM' : 'set'),
+                 weighted ? best.e1rm + ' kg' : best.bestReps + ' reps', 'good')}
+            ${weighted ? kv('Heaviest set', Calc.r(best.bestWeight, 2) + ' kg') : ''}
+            ${kv('Most reps', best.bestReps)}
+            ${kv('Sets logged', best.totalSets)}
+            ${kv('Achieved', fmtDate(best.bestDay))}
+          ` : `<p class="hint">No data yet.</p>`}
+        </div>
+
+        ${trend.length > 1 ? `
+        <div class="card">
+          <div class="card-head">
+            <p class="card-title">${weighted ? 'Estimated 1RM' : 'Reps'} trend</p>
+            <span class="tag">${trend.length} sessions</span>
+          </div>
+          ${sparkline(trend, { color: 'var(--protein)' })}
+          <div style="display:flex;justify-content:space-between;margin-top:8px;
+                      font-size:11px;color:var(--dim)">
+            <span>${fmtDate(hist[hist.length - 1].day)}</span>
+            <span>${fmtDate(hist[0].day)}</span>
+          </div>
+        </div>` : ''}
+
+        <div class="card" style="padding:0">
+          <div class="card-head" style="padding:16px 16px 10px;margin:0">
+            <p class="card-title">Session history</p></div>
+          ${hist.length ? hist.map(h => `
+            <button class="pick" data-sess="${h.sessionId}">
+              <div class="pick-main">
+                <div class="pick-name">${dayLabel(h.day)}</div>
+                <div class="pick-sub">${h.sets.map(x =>
+                  `${x.weightKg ? Calc.r(x.weightKg, 2) + '×' : ''}${x.reps}`).join(', ')}</div>
+              </div>
+              <div class="pick-k">${Math.round(h.best * 10) / 10}<b>${weighted ? 'e1RM' : 'reps'}</b></div>
+            </button>`).join('')
+          : `<div class="meal-empty">No sessions</div>`}
+        </div>
+
+      </div>`;
+
+    $$('[data-sess]').forEach(b => b.addEventListener('click', () => {
+      App.sessionId = b.dataset.sess;
+      location.hash = '#/history';
+    }));
+  }
+};
 
 /** True when launched from the home screen icon (not in Safari). */
 function isStandalone() {
