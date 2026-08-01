@@ -723,6 +723,22 @@ Screens.goal = {
   }
 };
 /* ============================================================
+   ADD FOOD
+   ============================================================ */
+Screens.add = {
+  title: 'Add food', tab: 'food', back: '#/food',
+  sub() {
+    const c = App.addCtx || {};
+    return Food.mealLabel(c.meal) + ' · ' + dayLabel(c.day || Store.dayKey());
+  },
+  render: () => `<div id="add-root"><div class="spinner">Loading…</div></div>`,
+  async mount() {
+    if (!App.addCtx) App.addCtx = { day: Store.dayKey(), meal: 'snack' };
+    App.addState = { view: 'pick', src: 'lib', food: null, query: '', results: null, busy: false };
+    await paintAdd();
+  }
+};
+/* ============================================================
    FOOD — day view painter
    Called by Screens.food.mount() and after every mutation.
    ============================================================ */
@@ -857,6 +873,392 @@ function entryAmount(e) {
   if (e.grams && e.servingLabel) return `${e.servingLabel} (${Math.round(e.grams)} g)`;
   if (e.grams) return `${Math.round(e.grams)} g`;
   return e.servingLabel || '1 serving';
+}
+
+/* ============================================================
+   ADD FOOD — painters
+   ============================================================ */
+async function paintAdd() {
+  return App.addState.view === 'portion' ? paintPortion() : paintPick();
+}
+
+/* ---------- meal selector (shared by both steps) ---------- */
+function mealChips() {
+  const cur = App.addCtx.meal;
+  return `<div class="chips" style="margin-bottom:14px">${
+    Food.MEALS.map(m =>
+      `<button class="chip ${m.key === cur ? 'on' : ''}" data-meal="${m.key}">${m.label}</button>`
+    ).join('')}</div>`;
+}
+
+function wireMealChips() {
+  $$('[data-meal]').forEach(b => b.addEventListener('click', () => {
+    App.addCtx.meal = b.dataset.meal;
+    $$('[data-meal]').forEach(x => x.classList.toggle('on', x === b));
+    $('#screen-sub').textContent =
+      Food.mealLabel(App.addCtx.meal) + ' · ' + dayLabel(App.addCtx.day);
+  }));
+}
+
+/* ---------- list rows ---------- */
+function libRow(f) {
+  const p = f.per100 || {};
+  return `
+    <button class="pick" data-lib="${f.id}">
+      <div class="pick-main">
+        <div class="pick-name">${f.favorite ? '<span class="star">★</span> ' : ''}${esc(f.name)}</div>
+        <div class="pick-sub">${esc(f.brand || 'per 100 g')}${f.servingLabel ? ' · ' + esc(f.servingLabel) : ''}</div>
+      </div>
+      <div class="pick-k">${Math.round(p.kcal || 0)} kcal<b>${Math.round(p.protein || 0)} g P</b></div>
+    </button>`;
+}
+
+function offRow(f, i) {
+  const p = f.per100 || {};
+  return `
+    <button class="pick" data-off="${i}">
+      <div class="pick-main">
+        <div class="pick-name">${esc(f.name)}</div>
+        <div class="pick-sub">${esc(f.brand || 'unbranded')}${f.servingG ? ' · serving ' + Math.round(f.servingG) + ' g' : ''}</div>
+      </div>
+      <div class="pick-k">${Math.round(p.kcal || 0)} kcal<b>${Math.round(p.protein || 0)} g P</b></div>
+    </button>`;
+}
+
+function wirePickRows() {
+  $$('[data-lib]').forEach(b => b.addEventListener('click', async () => {
+    const f = await Food.getFood(b.dataset.lib);
+    if (f) openPortion(f, false);
+  }));
+  $$('[data-off]').forEach(b => b.addEventListener('click', () => {
+    const f = App.addState.results?.[Number(b.dataset.off)];
+    if (f) openPortion(f, true);
+  }));
+}
+
+function openPortion(food, isNew) {
+  const s = App.addState;
+  s.food  = food;
+  s.isNew = !!isNew;
+  s.grams = food.servingG || 100;
+  s.view  = 'portion';
+  paintAdd();
+}
+
+/* ============================================================
+   STEP 1 — pick a food
+   ============================================================ */
+async function paintPick() {
+  const root = $('#add-root');
+  const s = App.addState;
+
+  const tabs = `
+    <div class="srctabs">
+      <button class="srctab ${s.src === 'lib'   ? 'on' : ''}" data-src="lib">My foods</button>
+      <button class="srctab ${s.src === 'off'   ? 'on' : ''}" data-src="off">Search web</button>
+      <button class="srctab ${s.src === 'quick' ? 'on' : ''}" data-src="quick">Quick add</button>
+    </div>`;
+
+  let body = '';
+
+  if (s.src === 'lib') {
+    const rows = await Food.searchLibrary(s.query);
+    body = `
+      <div class="searchbar">
+        <input id="q" type="search" placeholder="Search my foods…" value="${esc(s.query)}"
+               autocomplete="off" enterkeyhint="search">
+        ${s.query ? `<button class="sb-clear" id="q-clear">×</button>` : ''}
+      </div>
+      <div id="lib-list">${
+        rows.length ? `<div class="picker">${rows.map(libRow).join('')}</div>`
+                    : `<div class="empty"><h3>No matches</h3>
+                         <p class="hint">Try “Search web” or “Quick add”.</p></div>`}</div>`;
+  }
+
+  if (s.src === 'off') {
+    body = `
+      <div class="searchbar">
+        <input id="q" type="search" placeholder="Product name, e.g. skyr" value="${esc(s.query)}"
+               autocomplete="off" enterkeyhint="search">
+      </div>
+      <button class="btn btn-primary btn-block btn-sm" id="off-go" style="margin-bottom:14px">Search</button>
+
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-head"><p class="card-title">Or enter a barcode</p></div>
+        <div style="display:flex;gap:8px">
+          <input id="bc" type="text" inputmode="numeric" placeholder="5000112637922"
+                 autocomplete="off" style="flex:1">
+          <button class="btn btn-sm" id="bc-go">Look&nbsp;up</button>
+        </div>
+        <p class="hint" style="margin-top:8px">Type the digits printed under the barcode.</p>
+      </div>
+
+      ${!navigator.onLine
+        ? `<div class="verdict tone-warn">You're offline — web search needs a connection.</div>`
+        : ''}
+      <div id="off-results">${
+        s.results === null ? ''
+        : s.results.length ? `<div class="picker">${s.results.map(offRow).join('')}</div>`
+        : `<div class="empty"><h3>Nothing found</h3>
+             <p class="hint">Use Quick add instead.</p></div>`}</div>`;
+  }
+
+  if (s.src === 'quick') {
+    body = `
+      <form id="quick-form" class="card" onsubmit="return false">
+        <p class="hint" style="margin-bottom:14px">
+          Straight macros, no database. Good for restaurant food or a rough guess.</p>
+        <label class="field"><span>Name</span>
+          <input name="name" data-type="text" placeholder="Chicken shawarma"></label>
+        <div class="field-row">
+          <label class="field"><span>Calories</span>
+            <input name="kcal" data-type="number" type="number" inputmode="numeric" placeholder="0"></label>
+          <label class="field"><span>Protein (g)</span>
+            <input name="protein" data-type="number" type="number" inputmode="decimal" placeholder="0"></label>
+        </div>
+        <div class="field-row">
+          <label class="field"><span>Carbs (g)</span>
+            <input name="carbs" data-type="number" type="number" inputmode="decimal" placeholder="0"></label>
+          <label class="field" style="margin-bottom:0"><span>Fat (g)</span>
+            <input name="fat" data-type="number" type="number" inputmode="decimal" placeholder="0"></label>
+        </div>
+        <div id="quick-preview" style="margin-top:14px"></div>
+        <button class="btn btn-primary btn-block" id="quick-add" style="margin-top:14px">Add to log</button>
+      </form>`;
+  }
+
+  root.innerHTML = mealChips() + tabs + body;
+  wireMealChips();
+  wirePickRows();
+
+  $$('[data-src]').forEach(b => b.addEventListener('click', () => {
+    s.src = b.dataset.src;
+    s.results = null;
+    paintAdd();
+  }));
+
+  /* ---- library live filter ---- */
+  if (s.src === 'lib') {
+    $('#q').addEventListener('input', async (e) => {
+      s.query = e.target.value;
+      const rows = await Food.searchLibrary(s.query);
+      $('#lib-list').innerHTML = rows.length
+        ? `<div class="picker">${rows.map(libRow).join('')}</div>`
+        : `<div class="empty"><h3>No matches</h3><p class="hint">Try “Search web”.</p></div>`;
+      wirePickRows();
+    });
+    $('#q-clear')?.addEventListener('click', () => { s.query = ''; paintAdd(); });
+  }
+
+  /* ---- web search ---- */
+  if (s.src === 'off') {
+    const runSearch = async () => {
+      s.query = $('#q').value;
+      if (s.query.trim().length < 2) return toast('Type at least 2 characters');
+      $('#off-results').innerHTML = `<div class="spinner">Searching…</div>`;
+      try {
+        s.results = await Food.searchOFF(s.query);
+        paintAdd();
+      } catch (err) {
+        $('#off-results').innerHTML =
+          `<div class="verdict tone-bad">Search failed — ${esc(err.message)}</div>`;
+      }
+    };
+
+    $('#off-go').addEventListener('click', runSearch);
+    $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+
+    const lookup = async () => {
+      const code = $('#bc').value.trim();
+      if (!code) return toast('Enter the barcode digits');
+      $('#off-results').innerHTML = `<div class="spinner">Looking up ${esc(code)}…</div>`;
+      try {
+        const food = await Food.lookupBarcode(code);
+        if (!food) {
+          $('#off-results').innerHTML =
+            `<div class="verdict tone-warn">Not in the database. Use Quick add,
+               then save it to My foods for next time.</div>`;
+          return;
+        }
+        openPortion(food, true);
+      } catch (err) {
+        $('#off-results').innerHTML =
+          `<div class="verdict tone-bad">Lookup failed — ${esc(err.message)}</div>`;
+      }
+    };
+
+    $('#bc-go').addEventListener('click', lookup);
+    $('#bc').addEventListener('keydown', e => { if (e.key === 'Enter') lookup(); });
+  }
+
+  /* ---- quick add ---- */
+  if (s.src === 'quick') {
+    const form = $('#quick-form');
+
+    const paintQ = () => {
+      const v = readForm(form);
+      const macros = {
+        kcal:    v.kcal    || 0,
+        protein: v.protein || 0,
+        carbs:   v.carbs   || 0,
+        fat:     v.fat     || 0
+      };
+      if (!macros.kcal) macros.kcal = Food.kcalFromMacros(macros);
+      $('#quick-preview').innerHTML = macroGrid({
+        kcal: Math.round(macros.kcal),
+        protein: Math.round(macros.protein),
+        carbs: Math.round(macros.carbs),
+        fat: Math.round(macros.fat)
+      });
+    };
+
+    form.addEventListener('input', paintQ);
+    paintQ();
+
+    $('#quick-add').addEventListener('click', async () => {
+      const v = readForm(form);
+      const macros = {
+        kcal:    v.kcal    || 0,
+        protein: v.protein || 0,
+        carbs:   v.carbs   || 0,
+        fat:     v.fat     || 0,
+        fiber:   0
+      };
+      if (!macros.kcal) macros.kcal = Food.kcalFromMacros(macros);
+      if (!macros.kcal) return toast('Enter calories or macros');
+
+      await Food.addEntry({
+        day:  App.addCtx.day,
+        meal: App.addCtx.meal,
+        name: (v.name || 'Quick add').trim(),
+        servingLabel: '1 serving',
+        macros
+      });
+      tick();
+      toast('Added');
+      location.hash = '#/food';
+    });
+  }
+}
+
+/* ============================================================
+   STEP 2 — choose the portion
+   ============================================================ */
+function paintPortion() {
+  const root = $('#add-root');
+  const s = App.addState;
+  const f = s.food;
+  const p = f.per100 || {};
+
+  /* quick amount buttons — serving size first if the food has one */
+  const presets = [];
+  if (f.servingG) {
+    presets.push({ g: f.servingG,     label: (f.servingLabel || '1 serving') });
+    presets.push({ g: f.servingG * 2, label: '2 ×' });
+  }
+  [50, 100, 150, 200, 250].forEach(g => presets.push({ g, label: g + ' g' }));
+
+  root.innerHTML = `
+    <button class="btn btn-sm btn-ghost" id="back-pick" style="margin-bottom:14px">
+      ‹ Choose a different food</button>
+
+    ${mealChips()}
+
+    <div class="card">
+      <div class="row" style="padding-top:0">
+        <div class="row-main">
+          <div class="row-title">${esc(f.name)}</div>
+          <div class="row-sub">${esc(f.brand || '')}${f.brand ? ' · ' : ''}per 100 g:
+            ${Math.round(p.kcal)} kcal, ${Calc.r(p.protein,1)} P, ${Calc.r(p.carbs,1)} C, ${Calc.r(p.fat,1)} F</div>
+        </div>
+        ${!s.isNew ? `<button class="btn btn-sm btn-ghost" id="fav-btn">${f.favorite ? '★' : '☆'}</button>` : ''}
+      </div>
+
+      <label class="field" style="margin:14px 0 10px">
+        <span>Amount (grams)</span>
+        <input id="g" type="number" inputmode="decimal" step="1" value="${Math.round(s.grams)}">
+      </label>
+
+      <div class="chips">
+        ${presets.map(pr =>
+          `<button class="chip" data-g="${pr.g}">${esc(pr.label)}</button>`).join('')}
+      </div>
+
+      <div id="portion-preview" style="margin-top:16px"></div>
+
+      ${s.isNew ? `
+      <label class="seg-opt on" style="margin-top:16px" id="save-lib-wrap">
+        <input type="checkbox" id="save-lib" checked style="display:none">
+        <span class="dot"></span>
+        <span><b>Save to My foods</b><small>So you can log it instantly next time, offline.</small></span>
+      </label>` : ''}
+    </div>
+
+    <div class="sticky-save">
+      <button class="btn btn-primary btn-block" id="log-btn">Add to ${Food.mealLabel(App.addCtx.meal).toLowerCase()}</button>
+    </div>`;
+
+  wireMealChips();
+
+  const gInput = $('#g');
+
+  const paintPreview = () => {
+    const grams = Number(gInput.value) || 0;
+    const m = Food.scale(p, grams);
+    $('#portion-preview').innerHTML = macroGrid({
+      kcal: Math.round(m.kcal),
+      protein: Math.round(m.protein),
+      carbs: Math.round(m.carbs),
+      fat: Math.round(m.fat)
+    }) + (m.fiber ? `<div style="margin-top:10px">${kv('Fibre', Calc.r(m.fiber,1) + ' g')}</div>` : '');
+    $$('[data-g]').forEach(b =>
+      b.classList.toggle('on', Math.round(Number(b.dataset.g)) === Math.round(grams)));
+  };
+
+  gInput.addEventListener('input', paintPreview);
+  paintPreview();
+
+  $$('[data-g]').forEach(b => b.addEventListener('click', () => {
+    gInput.value = Math.round(Number(b.dataset.g));
+    s.grams = Number(gInput.value);
+    paintPreview();
+  }));
+
+  $('#back-pick').addEventListener('click', () => { s.view = 'pick'; paintAdd(); });
+
+  /* toggle checkbox styling */
+  $('#save-lib-wrap')?.addEventListener('click', () => {
+    setTimeout(() => $('#save-lib-wrap').classList.toggle('on', $('#save-lib').checked), 0);
+  });
+
+  $('#fav-btn')?.addEventListener('click', async () => {
+    const updated = await Food.toggleFavorite(f.id);
+    if (updated) { s.food = updated; $('#fav-btn').textContent = updated.favorite ? '★' : '☆'; }
+  });
+
+  $('#log-btn').addEventListener('click', async () => {
+    const grams = Number(gInput.value) || 0;
+    if (grams <= 0) return toast('Enter an amount');
+
+    let food = f;
+    if (s.isNew && $('#save-lib')?.checked) food = await Food.saveFood(f);
+
+    await Food.addEntry({
+      day:  App.addCtx.day,
+      meal: App.addCtx.meal,
+      name: food.name,
+      brand: food.brand,
+      grams,
+      servingLabel: (food.servingG && Math.round(grams) === Math.round(food.servingG))
+        ? (food.servingLabel || '') : '',
+      macros: Food.scale(food.per100, grams),
+      foodId: food.id || null
+    });
+
+    tick();
+    toast('Added');
+    location.hash = '#/food';
+  });
 }
 
 /** True when launched from the home screen icon (not in Safari). */
