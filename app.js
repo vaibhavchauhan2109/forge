@@ -1860,6 +1860,405 @@ function paintNewExercise() {
   });
 }
 
+/* ============================================================
+   LIVE SESSION LOGGER
+   ============================================================ */
+Screens.session = {
+  title: () => App.sess?.session?.name || 'Session',
+  tab: 'train', back: '#/train',
+  sub: () => App.sess?.view === 'pick' ? 'Add an exercise' : 'Tap ✓ to log each set',
+  render: () => `<div id="sess-root"><div class="spinner">Loading…</div></div>`,
+  async mount() {
+    const s = await Train.getActive();
+    if (!s) { toast('No session in progress'); location.hash = '#/train'; return; }
+    App.sess = { session: s, view: 'log', sug: {}, warm: {}, q: '', muscle: null, result: null };
+    if (!App.timerInt) App.timerInt = setInterval(tickClocks, 250);
+    await paintSession();
+  }
+};
+
+async function paintSession() {
+  const st = App.sess;
+  if (st.view === 'pick') return paintSessionPick();
+  if (st.view === 'done') return paintSessionDone();
+  return paintSessionLog();
+}
+
+/* ---------------- helpers ---------------- */
+function mmss(sec) {
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m + ':' + String(s).padStart(2, '0');
+}
+
+function tickClocks() {
+  const st = App.sess;
+  const el = $('#elapsed');
+  if (el && st?.session) {
+    el.textContent = mmss(Math.round((Date.now() - st.session.startedAt) / 1000));
+  }
+  if (App.rest) {
+    const left = Math.max(0, Math.round((App.rest.endsAt - Date.now()) / 1000));
+    const v = $('#rest-val');
+    if (v) v.textContent = mmss(left);
+    const bar = $('#rest-bar');
+    if (bar) bar.classList.toggle('ready', left === 0);
+    if (left === 0 && !App.rest.fired) {
+      App.rest.fired = true;
+      if (navigator.vibrate) navigator.vibrate([120, 80, 120]);
+      const lbl = $('#rest-label');
+      if (lbl) lbl.textContent = 'Rest done — go';
+    }
+  }
+  if (!App.rest && !$('#elapsed')) { clearInterval(App.timerInt); App.timerInt = null; }
+}
+
+function startRest(sec) {
+  if (!sec) return;
+  App.rest = { endsAt: Date.now() + sec * 1000, dur: sec, fired: false };
+  if (!App.timerInt) App.timerInt = setInterval(tickClocks, 250);
+  paintRestBar();
+}
+
+function stopRest() {
+  App.rest = null;
+  $('#rest-bar')?.remove();
+}
+
+function paintRestBar() {
+  if (!App.rest) return;
+  let el = $('#rest-bar');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'rest-bar';
+    el.className = 'timerbar';
+    document.body.appendChild(el);
+  }
+  const left = Math.max(0, Math.round((App.rest.endsAt - Date.now()) / 1000));
+  el.innerHTML = `
+    <div>
+      <b id="rest-val">${mmss(left)}</b>
+      <div class="banner-sub" id="rest-label">Rest</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" id="rest-plus">+30s</button>
+      <button class="btn btn-sm btn-ghost" id="rest-skip">Skip</button>
+    </div>`;
+  $('#rest-plus').addEventListener('click', () => {
+    App.rest.endsAt += 30000; App.rest.fired = false;
+    $('#rest-label').textContent = 'Rest';
+    $('#rest-bar').classList.remove('ready');
+  });
+  $('#rest-skip').addEventListener('click', stopRest);
+}
+
+/* ---------------- main log view ---------------- */
+async function paintSessionLog() {
+  const st = App.sess, s = st.session;
+
+  /* one suggestion per exercise, computed once */
+  for (const slot of s.plan) {
+    if (!st.sug[slot.exerciseId]) st.sug[slot.exerciseId] = await Train.suggest(slot.exerciseId, slot);
+  }
+
+  const work = s.sets.filter(x => !x.warmup);
+  const kg = Math.round(work.reduce((a, x) => a + (x.weightKg || 0) * (x.reps || 0), 0));
+
+  const header = `
+    <div class="card">
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-value" id="elapsed">0:00</div><div class="stat-label">elapsed</div></div>
+        <div class="stat"><div class="stat-value">${work.length}</div><div class="stat-label">sets</div></div>
+        <div class="stat"><div class="stat-value">${kg.toLocaleString()}</div><div class="stat-label">kg lifted</div></div>
+      </div>
+    </div>`;
+
+  const numStyle = 'appearance:none;border:0;background:transparent;color:var(--dim);' +
+                   'font:inherit;font-weight:800;font-size:12px;cursor:pointer;padding:0';
+
+  const blocks = s.plan.map((slot, si) => {
+    const sug = st.sug[slot.exerciseId] || {};
+    const logged = s.sets.filter(x => x.exerciseId === slot.exerciseId);
+    const prev = logged[logged.length - 1];
+    const rowCount = Math.max(slot.sets, logged.length);
+
+    let rows = '';
+    for (let i = 0; i < rowCount; i++) {
+      const done = logged[i];
+      const wKey = slot.exerciseId + ':' + i;
+      const isWarm = done ? !!done.warmup : !!st.warm[wKey];
+      const wVal = done ? done.weightKg : (prev ? prev.weightKg : (sug.weightKg ?? ''));
+      const rVal = done ? done.reps     : (sug.reps ?? slot.repMax);
+      const iVal = done ? (done.rir ?? '') : slot.rir;
+      rows += `
+        <div class="setrow ${done ? 'logged' : ''} ${isWarm ? 'warmup' : ''}">
+          <button style="${numStyle}" data-warm="${wKey}" ${done ? 'disabled' : ''}
+                  title="Tap to mark as warm-up">${isWarm ? 'W' : i + 1}</button>
+          <input id="w-${slot.exerciseId}-${i}" type="number" inputmode="decimal" step="1.25"
+                 value="${wVal}" placeholder="kg" ${done ? 'disabled' : ''}>
+          <input id="r-${slot.exerciseId}-${i}" type="number" inputmode="numeric"
+                 value="${rVal}" placeholder="reps" ${done ? 'disabled' : ''}>
+          <input id="i-${slot.exerciseId}-${i}" type="number" inputmode="numeric" min="0" max="5"
+                 value="${iVal}" placeholder="rir" ${done ? 'disabled' : ''}>
+          <button class="ok" data-log="${slot.exerciseId}:${i}">✓</button>
+        </div>`;
+    }
+
+    return `
+      <div class="exblock">
+        <div class="exhead">
+          <div class="exhead-top">
+            <div style="min-width:0">
+              <div class="exname">${esc(slot.exerciseName)}</div>
+              <div class="exmeta">${slot.sets}×${slot.repMin}–${slot.repMax} · RIR ${slot.rir} · rest ${slot.restSec}s</div>
+            </div>
+            <button class="iconbtn danger" data-rmex="${si}">×</button>
+          </div>
+          ${sug.note ? `<div class="exsuggest">${esc(sug.note)}</div>` : ''}
+        </div>
+        <div class="setlabels"><span></span><span>kg</span><span>reps</span><span>rir</span><span></span></div>
+        ${rows}
+        <div class="ex-actions">
+          <button class="btn btn-sm btn-ghost" data-addset="${si}">+ Set</button>
+          <button class="btn btn-sm btn-ghost" data-rmset="${si}"
+                  ${slot.sets <= Math.max(1, logged.length) ? 'disabled' : ''}>− Set</button>
+        </div>
+      </div>`;
+  }).join('');
+
+  $('#sess-root').innerHTML = `
+    ${header}
+    ${blocks || `<div class="empty"><h3>Empty session</h3>
+                   <p class="hint">Add your first exercise below.</p></div>`}
+
+    <button class="btn btn-block btn-ghost" id="add-ex-sess" style="margin-bottom:14px">
+      + Add exercise</button>
+
+    <div class="card" style="margin-bottom:14px">
+      <label class="field" style="margin:0"><span>Session notes</span>
+        <textarea id="sess-notes" rows="2" placeholder="Felt strong, left knee tight…">${esc(s.notes || '')}</textarea></label>
+    </div>
+
+    <button class="btn btn-primary btn-block" id="finish">Finish workout</button>
+    <button class="btn btn-block btn-danger" id="discard" style="margin-top:8px">Discard session</button>
+    <div style="height:70px"></div>`;
+
+  /* ---------------- wiring ---------------- */
+
+  $$('[data-warm]').forEach(b => b.addEventListener('click', () => {
+    const k = b.dataset.warm;
+    st.warm[k] = !st.warm[k];
+    paintSessionLog();
+  }));
+
+  $$('[data-log]').forEach(b => b.addEventListener('click', async () => {
+    const [exId, idxRaw] = b.dataset.log.split(':');
+    const i = Number(idxRaw);
+    const slot = s.plan.find(x => x.exerciseId === exId);
+    const logged = s.sets.filter(x => x.exerciseId === exId);
+
+    /* tapping a logged set un-logs it */
+    if (logged[i]) {
+      s.sets = s.sets.filter(x => x.id !== logged[i].id);
+      await Train.setActive(s);
+      return paintSessionLog();
+    }
+
+    const w = Number($(`#w-${exId}-${i}`).value);
+    const r = Number($(`#r-${exId}-${i}`).value);
+    const ri = $(`#i-${exId}-${i}`).value;
+    if (!r || r <= 0) return toast('Enter reps');
+
+    s.sets.push({
+      id: Store.uid(),
+      exerciseId: exId,
+      exerciseName: slot.exerciseName,
+      weightKg: isFinite(w) ? w : 0,
+      reps: r,
+      rir: ri === '' ? null : Number(ri),
+      warmup: !!st.warm[exId + ':' + i],
+      ts: Date.now()
+    });
+    await Train.setActive(s);
+    tick();
+    if (!st.warm[exId + ':' + i]) startRest(slot.restSec);
+    paintSessionLog();
+  }));
+
+  $$('[data-addset]').forEach(b => b.addEventListener('click', async () => {
+    s.plan[Number(b.dataset.addset)].sets++;
+    await Train.setActive(s);
+    paintSessionLog();
+  }));
+
+  $$('[data-rmset]').forEach(b => b.addEventListener('click', async () => {
+    const slot = s.plan[Number(b.dataset.rmset)];
+    slot.sets = Math.max(1, slot.sets - 1);
+    await Train.setActive(s);
+    paintSessionLog();
+  }));
+
+  $$('[data-rmex]').forEach(b => b.addEventListener('click', async () => {
+    const si = Number(b.dataset.rmex);
+    const slot = s.plan[si];
+    if (!confirm(`Remove ${slot.exerciseName} from this session?`)) return;
+    s.sets = s.sets.filter(x => x.exerciseId !== slot.exerciseId);
+    s.plan.splice(si, 1);
+    await Train.setActive(s);
+    paintSessionLog();
+  }));
+
+  $('#sess-notes').addEventListener('input', async e => {
+    s.notes = e.target.value;
+    await Train.setActive(s);
+  });
+
+  $('#add-ex-sess').addEventListener('click', () => {
+    st.view = 'pick'; st.q = ''; st.muscle = null;
+    $('#screen-sub').textContent = 'Add an exercise';
+    paintSession();
+  });
+
+  $('#finish').addEventListener('click', async () => {
+    if (!work.length && !confirm('Nothing logged. Finish anyway? The session will be discarded.')) return;
+    stopRest();
+    const result = await Train.finishSession(s);
+    st.result = result;
+    st.view = 'done';
+    if (navigator.vibrate) navigator.vibrate([60, 60, 60]);
+    paintSession();
+  });
+
+  $('#discard').addEventListener('click', async () => {
+    if (!confirm('Discard this session? Everything logged in it is lost.')) return;
+    stopRest();
+    await Train.clearActive();
+    location.hash = '#/train';
+  });
+}
+
+/* ---------------- add an exercise mid-session ---------------- */
+async function paintSessionPick() {
+  const st = App.sess;
+  const rows = await Train.searchExercises(st.q, st.muscle);
+
+  $('#sess-root').innerHTML = `
+    <button class="btn btn-sm btn-ghost" id="sp-back" style="margin-bottom:14px">
+      ‹ Back to session</button>
+
+    <div class="searchbar">
+      <input id="sp-q" type="search" placeholder="Search exercises…"
+             value="${esc(st.q)}" autocomplete="off" enterkeyhint="search">
+    </div>
+
+    <div class="chips" style="margin-bottom:14px">
+      <button class="chip ${!st.muscle ? 'on' : ''}" data-m="">All</button>
+      ${Train.MUSCLES.map(m =>
+        `<button class="chip ${st.muscle === m.key ? 'on' : ''}" data-m="${m.key}">${m.label}</button>`
+      ).join('')}
+    </div>
+
+    <div id="sp-list">
+      ${rows.length ? `<div class="picker">${rows.map(exPickRow).join('')}</div>`
+                    : `<div class="empty"><h3>No matches</h3></div>`}
+    </div>`;
+
+  const wireRows = () => $$('[data-ex]').forEach(b => b.addEventListener('click', async () => {
+    const ex = await Train.getExercise(b.dataset.ex);
+    if (!ex) return;
+    st.session.plan.push({
+      exerciseId: ex.id, exerciseName: ex.name,
+      sets: 3, repMin: ex.repMin, repMax: ex.repMax,
+      rir: 2, restSec: ex.isCompound ? 150 : 90, note: ''
+    });
+    await Train.setActive(st.session);
+    st.view = 'log';
+    tick();
+    $('#screen-sub').textContent = 'Tap ✓ to log each set';
+    paintSession();
+  }));
+
+  $('#sp-back').addEventListener('click', () => {
+    st.view = 'log';
+    $('#screen-sub').textContent = 'Tap ✓ to log each set';
+    paintSession();
+  });
+
+  $('#sp-q').addEventListener('input', async e => {
+    st.q = e.target.value;
+    const list = await Train.searchExercises(st.q, st.muscle);
+    $('#sp-list').innerHTML = list.length
+      ? `<div class="picker">${list.map(exPickRow).join('')}</div>`
+      : `<div class="empty"><h3>No matches</h3></div>`;
+    wireRows();
+  });
+
+  $$('[data-m]').forEach(b => b.addEventListener('click', () => {
+    st.muscle = b.dataset.m || null;
+    paintSessionPick();
+  }));
+
+  wireRows();
+}
+
+/* ---------------- finished summary ---------------- */
+function paintSessionDone() {
+  const { session, prs } = App.sess.result || {};
+
+  if (!session) {
+    $('#sess-root').innerHTML = `
+      <div class="empty">
+        <h3>Session discarded</h3>
+        <p class="hint">Nothing was logged, so nothing was saved.</p>
+      </div>
+      <button class="btn btn-primary btn-block" id="done-btn">Back to Train</button>`;
+    $('#done-btn').addEventListener('click', () => { location.hash = '#/train'; });
+    return;
+  }
+
+  const stats = sessionStats(session);
+
+  $('#sess-root').innerHTML = `
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><p class="card-title">${esc(session.name)}</p>
+          <span class="tag">${dayLabel(session.day)}</span></div>
+        <div class="stat-grid">
+          <div class="stat"><div class="stat-value">${stats.sets}</div><div class="stat-label">sets</div></div>
+          <div class="stat"><div class="stat-value">${stats.exercises}</div><div class="stat-label">exercises</div></div>
+          <div class="stat"><div class="stat-value">${fmtDur(session.durationSec)}</div><div class="stat-label">time</div></div>
+        </div>
+        <div style="margin-top:14px">
+          ${kv('Total load', stats.kg.toLocaleString() + ' kg')}
+          ${session.notes ? kv('Notes', esc(session.notes)) : ''}
+        </div>
+      </div>
+
+      ${prs && prs.length ? `
+        <div class="card">
+          <div class="card-head"><p class="card-title">New records</p>
+            <span class="pr">${prs.length} PR${prs.length > 1 ? 's' : ''}</span></div>
+          ${prs.map(p => `
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">${esc(p.name)}</div>
+                <div class="row-sub">${p.isFirst ? 'First time logged'
+                  : 'Previous best ' + p.previous + (p.type === 'e1RM' ? ' kg' : ' reps')}</div>
+              </div>
+              <div class="row-value tone-good">${p.value}${p.type === 'e1RM' ? ' kg' : ' reps'}</div>
+            </div>`).join('')}
+          <p class="hint" style="margin-top:10px;font-size:12px">
+            Estimated 1RM from the Epley formula — weight × (1 + reps ÷ 30).</p>
+        </div>` : `
+        <div class="card">
+          <p class="hint">No PRs this time. Consistency beats records — the volume still counts.</p>
+        </div>`}
+
+      <button class="btn btn-primary btn-block" id="done-btn">Done</button>
+    </div>`;
+
+  $('#done-btn').addEventListener('click', () => { location.hash = '#/train'; });
+}
+
 /** True when launched from the home screen icon (not in Safari). */
 function isStandalone() {
   return window.navigator.standalone === true ||
@@ -1879,6 +2278,7 @@ function render() {
   const screen = Screens[name];
   App.route = name;
   if (name !== 'food') App.lastDeleted = null;
+  if (name !== 'session') stopRest();
 
   /* header */
   $('#screen-title').textContent =
