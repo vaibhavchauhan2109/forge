@@ -207,12 +207,9 @@ const Screens = {
   /* ---------------- TRAIN ---------------- */
   train: {
     title: 'Train',
-    sub: () => 'Planner & session log',
-    render: () => `
-      <div class="empty">
-        <h3>Workout planner</h3>
-        <p class="hint">Coming in Phase 4: templates, set logging, RIR, auto progression.</p>
-      </div>`
+    sub: () => 'Planner & log',
+    render: () => `<div id="train-root"><div class="spinner">Loading…</div></div>`,
+    async mount() { await paintTrain(); }
   },
 
   /* ---------------- BODY ---------------- */
@@ -836,7 +833,180 @@ async function paintFood() {
     if (n) await paintFood();
   });
 }
+/* ============================================================
+   TRAIN — hub
+   ============================================================ */
+const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
+function fmtDur(sec) {
+  if (!sec) return '—';
+  const m = Math.round(sec / 60);
+  return m < 60 ? m + ' min' : Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+
+/** working sets + total kg for one session */
+function sessionStats(s) {
+  const work = (s.sets || []).filter(x => !x.warmup);
+  const kg = work.reduce((a, x) => a + (x.weightKg || 0) * (x.reps || 0), 0);
+  const exCount = new Set(work.map(x => x.exerciseId)).size;
+  return { sets: work.length, kg: Math.round(kg), exercises: exCount };
+}
+
+async function paintTrain() {
+  const root = $('#train-root');
+  if (!root) return;
+
+  const [active, tpls, recent] = await Promise.all([
+    Train.getActive(),
+    Train.allTemplates(),
+    Train.recentSessions(6)
+  ]);
+
+  const today = Store.dayKey();
+  const vol   = await Train.volumeByMuscle(Store.addDays(today, -6), today);
+  const dow   = new Date().getDay();
+  const todayTpl = tpls.find(t => t.dayHint === dow);
+
+  /* ---------- resume banner ---------- */
+  const banner = active ? `
+    <div class="banner">
+      <div class="banner-main">
+        <div class="banner-title">${esc(active.name)}</div>
+        <div class="banner-sub">In progress · ${(active.sets || []).filter(s => !s.warmup).length} sets logged</div>
+      </div>
+      <button class="btn btn-primary btn-sm" id="resume">Resume</button>
+    </div>` : '';
+
+  /* ---------- today ---------- */
+  const todayCard = active ? '' : `
+    <div class="card">
+      <div class="card-head">
+        <p class="card-title">${DOW[dow]} — today</p>
+        ${todayTpl ? `<span class="tag">scheduled</span>` : ''}
+      </div>
+      ${todayTpl ? `
+        <div class="tpl-name">${esc(todayTpl.name)}</div>
+        <div class="tpl-sub" style="margin-bottom:14px">
+          ${todayTpl.slots.length} exercises ·
+          ${todayTpl.slots.reduce((n, s) => n + (s.sets || 0), 0)} sets</div>
+        <button class="btn btn-primary btn-block" data-start="${todayTpl.id}">
+          Start ${esc(todayTpl.name)}</button>
+      ` : `
+        <p class="hint" style="margin-bottom:14px">
+          Nothing scheduled for ${DOW[dow]}. Pick a workout below, or train freestyle.</p>
+      `}
+      <button class="btn btn-block btn-ghost" id="freestyle" style="margin-top:8px">
+        Freestyle session</button>
+    </div>`;
+
+  /* ---------- templates ---------- */
+  const tplCard = `
+    <div class="card" style="padding:0">
+      <div class="card-head" style="padding:16px 16px 10px;margin:0">
+        <p class="card-title">My workouts</p>
+        <button class="btn btn-sm btn-ghost" id="new-tpl">+ New</button>
+      </div>
+      ${tpls.length ? tpls.map(t => `
+        <div class="tpl">
+          <div class="tpl-main">
+            <div class="tpl-name">${esc(t.name)}
+              ${t.dayHint != null ? `<span class="daytag">${DOW[t.dayHint]}</span>` : ''}</div>
+            <div class="tpl-sub">${esc(t.slots.map(s => s.exerciseName).slice(0, 3).join(' · '))}${t.slots.length > 3 ? ' …' : ''}</div>
+          </div>
+          <div class="tpl-actions">
+            <button class="btn btn-sm btn-ghost" data-edit="${t.id}">Edit</button>
+            <button class="btn btn-sm btn-primary" data-start="${t.id}">Start</button>
+          </div>
+        </div>`).join('')
+      : `<div class="meal-empty">No workouts yet — tap “+ New”.</div>`}
+    </div>`;
+
+  /* ---------- weekly volume ---------- */
+  const totalSets = Object.values(vol).reduce((a, b) => a + b, 0);
+  const volCard = `
+    <div class="card">
+      <div class="card-head">
+        <p class="card-title">Sets per muscle · last 7 days</p>
+        <span class="tag">${totalSets} total</span>
+      </div>
+      ${Train.MUSCLES.map(m => {
+        const n = vol[m.key] || 0;
+        const pct = Math.min(100, (n / m.mav) * 100);
+        const cls = n === 0 ? 'low' : n < m.mev ? 'low' : n > m.mav ? 'high' : '';
+        return `
+        <div class="volrow">
+          <span class="vl">${m.label}</span>
+          <span class="voltrack">
+            <i class="${cls}" style="width:${pct.toFixed(0)}%"></i>
+            <span class="mark" style="left:${((m.mev / m.mav) * 100).toFixed(0)}%"></span>
+          </span>
+          <span class="vv">${n}</span>
+        </div>`;
+      }).join('')}
+      <p class="hint" style="margin-top:12px;font-size:12px">
+        The tick marks the minimum effective volume. Grey = under it,
+        amber = above the productive ceiling.</p>
+    </div>`;
+
+  /* ---------- recent sessions ---------- */
+  const recentCard = `
+    <div class="card" style="padding:0">
+      <div class="card-head" style="padding:16px 16px 10px;margin:0">
+        <p class="card-title">Recent sessions</p>
+      </div>
+      ${recent.length ? recent.map(s => {
+        const st = sessionStats(s);
+        return `
+        <button class="pick" data-sess="${s.id}">
+          <div class="pick-main">
+            <div class="pick-name">${esc(s.name)}</div>
+            <div class="pick-sub">${dayLabel(s.day)} · ${st.exercises} exercises · ${fmtDur(s.durationSec)}</div>
+          </div>
+          <div class="pick-k">${st.sets} sets<b>${st.kg.toLocaleString()} kg</b></div>
+        </button>`;
+      }).join('')
+      : `<div class="meal-empty">No sessions logged yet</div>`}
+    </div>`;
+
+  root.innerHTML = `<div class="stack">
+    ${banner}${todayCard}${tplCard}${volCard}${recentCard}
+  </div>`;
+
+  /* ---------------- wiring ---------------- */
+
+  $('#resume')?.addEventListener('click', () => { location.hash = '#/session'; });
+
+  $$('[data-start]').forEach(b => b.addEventListener('click', async () => {
+    const existing = await Train.getActive();
+    if (existing && !confirm('You have a session in progress. Discard it and start this one?')) return;
+    const tpl = await Train.getTemplate(b.dataset.start);
+    await Train.startSession(tpl);
+    tick();
+    location.hash = '#/session';
+  }));
+
+  $('#freestyle')?.addEventListener('click', async () => {
+    const existing = await Train.getActive();
+    if (existing && !confirm('You have a session in progress. Discard it and start fresh?')) return;
+    await Train.startSession(null);
+    location.hash = '#/session';
+  });
+
+  $('#new-tpl')?.addEventListener('click', () => {
+    App.tplId = null;
+    location.hash = '#/template';
+  });
+
+  $$('[data-edit]').forEach(b => b.addEventListener('click', () => {
+    App.tplId = b.dataset.edit;
+    location.hash = '#/template';
+  }));
+
+  $$('[data-sess]').forEach(b => b.addEventListener('click', () => {
+    App.sessionId = b.dataset.sess;
+    location.hash = '#/history';
+  }));
+}
 /* ============================================================
    TODAY — dashboard
    ============================================================ */
