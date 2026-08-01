@@ -33,11 +33,12 @@
 <!-- ============ HEADER ============ -->
 <header id="topbar">
   <div class="bar-inner">
+    <button class="back-btn" id="back-btn" hidden aria-label="Back">‹</button>
     <div class="bar-left">
       <h1 id="screen-title">Today</h1>
       <p id="screen-sub"></p>
     </div>
-    <div class="bar-right" id="bar-action"><!-- per-screen buttons inject here --></div>
+    <div class="bar-right" id="bar-action"></div>
   </div>
 </header>
 
@@ -80,6 +81,8 @@
 
 <noscript><p style="padding:2rem;color:#fff">This app needs JavaScript enabled.</p></noscript>
 
+<script src="./store.js"></script>
+<script src="./calc.js"></script>
 <script src="./app.js"></script>
 
 <script>
