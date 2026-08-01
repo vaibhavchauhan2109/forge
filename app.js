@@ -1105,7 +1105,7 @@ async function paintToday() {
     <div class="card">
       <div class="card-head">
         <p class="card-title">Goal</p>
-        <a href="#/goal" style="color:var(--accent);font-size:13px;font-weight:700">Edit ›</a>
+        <a href="#/progress" style="color:var(--accent);font-size:13px;font-weight:700">Projection ›</a>
       </div>
       <div class="stat-grid">
         <div class="stat"><div class="stat-value">${pl.daysLeft}</div><div class="stat-label">days left</div></div>
@@ -3135,6 +3135,236 @@ async function paintPhotoCompare() {
     else st.pick = [st.pick[1], id];
     paintPhotos();
   }));
+}
+
+/* ============================================================
+   GOAL PROJECTION
+   ============================================================ */
+
+/** Chart with a real date axis, so two series with different dates line up. */
+function dateChart({ from, to, series, h = 150, targetLine = null }) {
+  const w = 300;
+  const span = Math.max(1, Store.daysBetween(from, to));
+  const vals = series.flatMap(s => s.points.map(p => p.value))
+                     .concat(targetLine != null ? [targetLine] : []);
+  if (vals.length < 2) return `<p class="hint">Not enough data yet.</p>`;
+
+  let min = Math.min(...vals), max = Math.max(...vals);
+  const pad = ((max - min) * 0.15) || 1;
+  min -= pad; max += pad;
+
+  const X = day => (Store.daysBetween(from, day) / span) * w;
+  const Y = v => h - ((v - min) / (max - min)) * (h - 14) - 7;
+
+  const body = series.map(s => {
+    if (!s.points.length) return '';
+    const pts = s.points.map(p => `${X(p.day).toFixed(1)},${Y(p.value).toFixed(1)}`).join(' ');
+    const x0 = X(s.points[0].day).toFixed(1);
+    const x1 = X(s.points[s.points.length - 1].day).toFixed(1);
+    const area = s.fill
+      ? `<polygon points="${x0},${h} ${pts} ${x1},${h}" fill="${s.color}" opacity="0.10"/>` : '';
+    return area + `<polyline points="${pts}" fill="none" stroke="${s.color}"
+      stroke-width="${s.width || 2.5}" ${s.dash ? 'stroke-dasharray="5 5"' : ''}
+      stroke-linecap="round" stroke-linejoin="round"/>`;
+  }).join('');
+
+  const tl = targetLine != null
+    ? `<line x1="0" y1="${Y(targetLine)}" x2="${w}" y2="${Y(targetLine)}"
+             stroke="var(--protein)" stroke-width="1" stroke-dasharray="2 4" opacity="0.8"/>` : '';
+
+  return `
+    <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none"
+         style="display:block;overflow:visible">${tl}${body}</svg>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-top:6px">
+      <span>${fmtDate(from)}</span><span>${fmtDate(to)}</span>
+    </div>`;
+}
+
+Screens.progress = {
+  title: 'Projection', tab: 'today', back: '#/today',
+  sub: () => 'Where you are vs where you need to be',
+  render: () => `<div id="prog-root"><div class="spinner">Loading…</div></div>`,
+  async mount() { await paintProgress(); }
+};
+
+async function paintProgress() {
+  const root = $('#prog-root');
+  if (!root) return;
+
+  const s = Store.s;
+  if (!s.targetDate || !s.targetBodyFatPct) {
+    root.innerHTML = `<div class="empty"><h3>No goal set</h3>
+      <p class="hint">Set a target body fat and date first.</p></div>
+      <a class="btn btn-primary btn-block" href="#/goal">Set a goal</a>`;
+    return;
+  }
+
+  const metrics = await allMetrics();
+  const bfRows = metrics.filter(m => m.bodyFatPct != null);
+  const wtRows = metrics.filter(m => m.weightKg != null);
+  const today = Store.dayKey();
+  const target = s.targetBodyFatPct;
+
+  /* ---- baseline ---- */
+  const start = bfRows[0] || { day: s.createdAt || today, bodyFatPct: Calc.bodyFat(s).pct };
+  const startBf = start.bodyFatPct;
+  const startDay = start.day;
+
+  if (startBf == null) {
+    root.innerHTML = `<div class="empty"><h3>No body-fat data</h3>
+      <p class="hint">Log waist and neck on the Body tab so we can estimate body fat.</p></div>
+      <a class="btn btn-primary btn-block" href="#/measure">Add measurements</a>`;
+    return;
+  }
+
+  /* ---- actual (smoothed) ---- */
+  const bfSmooth = emaSeries(bfRows.map(r => r.bodyFatPct));
+  const actual = bfRows.map((r, i) => ({ day: r.day, value: bfSmooth[i] }));
+  const nowBf = actual.length ? actual[actual.length - 1].value : startBf;
+  const nowDay = actual.length ? actual[actual.length - 1].day : startDay;
+
+  /* ---- required trajectory ---- */
+  const required = [
+    { day: startDay, value: startBf },
+    { day: s.targetDate, value: target }
+  ];
+
+  /* where should you be today? */
+  const totalDays = Math.max(1, Store.daysBetween(startDay, s.targetDate));
+  const elapsed = Math.max(0, Store.daysBetween(startDay, today));
+  const frac = Math.min(1, elapsed / totalDays);
+  const shouldBe = startBf + (target - startBf) * frac;
+  const delta = nowBf - shouldBe;             // negative = ahead of schedule
+
+  /* ---- projection from current rate ---- */
+  const tr = trendSummary(metrics, 'bodyFatPct', 28);
+  const perDay = tr ? tr.perWeek / 7 : 0;
+  const daysLeft = Store.daysBetween(today, s.targetDate);
+  const projectedAtTarget = nowBf + perDay * daysLeft;
+  const projected = perDay !== 0
+    ? [{ day: nowDay, value: nowBf }, { day: s.targetDate, value: projectedAtTarget }]
+    : [];
+
+  /* when will you actually hit the target at this rate? */
+  let hitDay = null;
+  if (perDay < -0.0005) {
+    const d = Math.round((target - nowBf) / perDay);
+    if (d >= 0 && d < 3000) hitDay = Store.addDays(nowDay, d);
+  }
+
+  /* ---- verdict ---- */
+  let verdict, tone;
+  if (nowBf <= target)             { verdict = 'Target reached — switch to building'; tone = 'good'; }
+  else if (delta <= -0.4)          { verdict = 'Ahead of schedule';   tone = 'good'; }
+  else if (delta <= 0.4)           { verdict = 'On schedule';         tone = 'good'; }
+  else if (delta <= 1.2)           { verdict = 'Slightly behind';     tone = 'warn'; }
+  else                             { verdict = 'Behind schedule';     tone = 'bad';  }
+
+  /* ---- adherence ---- */
+  const from30 = Store.addDays(today, -29);
+  const [mealRows, sessions] = await Promise.all([
+    Store.byDay('meals', from30, today),
+    Train.sessionsBetween(from30, today)
+  ]);
+  const loggedDays = new Set(mealRows.map(r => r.day)).size;
+  const weighDays = metrics.filter(m => m.day >= from30 && m.weightKg != null).length;
+  const perWeek = Calc.r(sessions.length / (30 / 7), 1);
+
+  /* ---- milestones ---- */
+  const lean = Calc.leanMassKg(s.weightKg, nowBf);
+  const months = [];
+  for (let i = 1; i <= 6; i++) {
+    const d = Store.addDays(startDay, Math.round(totalDays * (i / 6)));
+    const bfAt = startBf + (target - startBf) * (i / 6);
+    months.push({
+      day: d,
+      bf: Calc.r(bfAt, 1),
+      weight: lean ? Calc.r(lean / (1 - bfAt / 100), 1) : null,
+      past: d <= today
+    });
+  }
+
+  const dot = c => `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;
+    background:${c};margin-right:5px;vertical-align:middle"></span>`;
+
+  root.innerHTML = `
+    <div class="stack">
+
+      <div class="card">
+        <div class="stat-grid">
+          <div class="stat"><div class="stat-value">${elapsed}</div><div class="stat-label">days in</div></div>
+          <div class="stat"><div class="stat-value">${Math.max(0, daysLeft)}</div><div class="stat-label">days left</div></div>
+          <div class="stat"><div class="stat-value">${Math.round(frac * 100)}%</div><div class="stat-label">of timeline</div></div>
+        </div>
+        <div class="bar" style="margin-top:14px"><i style="width:${(frac * 100).toFixed(0)}%"></i></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Body fat vs plan</p>
+          <span class="tag">target ${target}%</span></div>
+        ${dateChart({
+          from: startDay, to: s.targetDate, targetLine: target,
+          series: [
+            { points: required, color: 'var(--dim)', width: 2, dash: true },
+            { points: projected, color: 'var(--fat)', width: 2, dash: true },
+            { points: actual, color: 'var(--accent)', width: 3, fill: true }
+          ]
+        })}
+        <div style="font-size:12px;color:var(--dim);margin-top:10px;line-height:1.7">
+          ${dot('var(--accent)')}Your smoothed body fat<br>
+          ${dot('var(--dim)')}Required trajectory<br>
+          ${projected.length ? `${dot('var(--fat)')}Projected at current rate<br>` : ''}
+          ${dot('var(--protein)')}Target
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Status</p></div>
+        <div class="verdict tone-${tone}"><b>${verdict}</b> —
+          you're at ${Calc.r(nowBf, 1)}%, the plan says ${Calc.r(shouldBe, 1)}% by now
+          (${delta >= 0 ? '+' : ''}${Calc.r(delta, 1)} points ${delta > 0 ? 'behind' : 'ahead'}).</div>
+        <div style="margin-top:14px">
+          ${kv('Starting body fat', Calc.r(startBf, 1) + '% on ' + fmtDate(startDay))}
+          ${kv('Current (smoothed)', Calc.r(nowBf, 1) + '%')}
+          ${kv('Current rate', (tr ? (tr.perWeek >= 0 ? '+' : '') + Calc.r(tr.perWeek, 2) : '0') + '% / week',
+               perDay < 0 ? 'good' : 'warn')}
+          ${kv('Projected on target date', Calc.r(projectedAtTarget, 1) + '%',
+               projectedAtTarget <= target + 0.3 ? 'good' : 'warn')}
+          ${kv('Target reached', hitDay ? fmtDate(hitDay)
+               : perDay >= 0 ? 'not at this rate' : '—',
+               hitDay && hitDay <= s.targetDate ? 'good' : 'warn')}
+        </div>
+        ${perDay >= 0 && nowBf > target ? `
+          <p class="hint" style="margin-top:12px;font-size:12px">
+            Body fat isn't trending down. Either the deficit isn't real (check logging accuracy)
+            or it's too small — drop calories by 150–200 and reassess in 2 weeks.</p>` : ''}
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Milestones</p></div>
+        ${months.map(m => `
+          <div class="kv" style="${m.past ? 'opacity:.5' : ''}">
+            <span>${fmtDate(m.day)}${m.past ? ' ✓' : ''}</span>
+            <b>${m.bf}%${m.weight ? ' · ' + m.weight + ' kg' : ''}</b>
+          </div>`).join('')}
+        <p class="hint" style="margin-top:12px;font-size:12px">
+          Weights assume you hold your current ${Calc.r(lean || 0, 1)} kg of lean mass.
+          Training hard and hitting protein is what makes that assumption true.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Adherence · last 30 days</p></div>
+        ${kv('Days food logged', loggedDays + ' / 30', loggedDays >= 24 ? 'good' : loggedDays >= 15 ? 'warn' : 'bad')}
+        ${kv('Weigh-ins', weighDays + ' / 30', weighDays >= 15 ? 'good' : 'warn')}
+        ${kv('Sessions per week', perWeek, perWeek >= 3 ? 'good' : 'warn')}
+        ${kv('Total sessions', sessions.length)}
+        <p class="hint" style="margin-top:12px;font-size:12px">
+          Under 20 logged days a month means the calorie data isn't reliable enough
+          to diagnose a stall.</p>
+      </div>
+
+      <a class="btn btn-block btn-ghost" href="#/goal">Adjust goal</a>
+    </div>`;
 }
 
 /** True when launched from the home screen icon (not in Safari). */
