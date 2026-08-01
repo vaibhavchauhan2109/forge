@@ -5,7 +5,7 @@
       and you will lose an hour wondering why nothing updated.
    ============================================================ */
 
-const VERSION = 'v15';
+const VERSION = 'v16';
 const CACHE   = `forge-${VERSION}`;
 
 const ASSETS = [
