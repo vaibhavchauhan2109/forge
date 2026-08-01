@@ -270,6 +270,14 @@ const Screens = {
             </div>
             <div class="row-value chev"></div>
           </a>
+
+          <a class="row" href="#/review">
+            <div class="row-main">
+              <div class="row-title">Weekly review</div>
+              <div class="row-sub">Adaptive TDEE and calorie adjustment</div>
+            </div>
+            <div class="row-value chev"></div>
+          </a>
         </div>
 
         <div class="card">
@@ -1167,7 +1175,7 @@ async function paintToday() {
       </div>
       <div style="display:flex;gap:8px;margin-top:14px">
         <a class="btn btn-sm btn-ghost" href="#/measure" style="flex:1">Log measurements</a>
-        <a class="btn btn-sm btn-ghost" href="#/food" style="flex:1">Food log</a>
+        <a class="btn btn-sm btn-ghost" href="#/review" style="flex:1">Weekly review</a>
       </div>
     </div>`;
 
@@ -3365,6 +3373,256 @@ async function paintProgress() {
 
       <a class="btn btn-block btn-ghost" href="#/goal">Adjust goal</a>
     </div>`;
+}
+
+/* ============================================================
+   WEEKLY REVIEW — adaptive TDEE & calorie adjustment
+   ============================================================ */
+
+/** kg/week we're aiming for. Negative = losing. */
+function targetWeeklyRate(s, plan) {
+  if (plan && !plan.expired && plan.rateKgPerWeek > 0) return -plan.rateKgPerWeek;
+  const bw = s.weightKg || 80;
+  if (s.goalMode === 'cut')    return -0.0065 * bw;
+  if (s.goalMode === 'recomp') return -0.0020 * bw;
+  return  0.0025 * bw;                     // lean bulk
+}
+
+/** Nutrition totals per day for a window. */
+async function nutritionWindow(from, to) {
+  const rows = await Store.byDay('meals', from, to);
+  const byDay = {};
+  rows.forEach(r => {
+    const d = (byDay[r.day] ||= { kcal: 0, protein: 0, carbs: 0, fat: 0 });
+    d.kcal += r.kcal || 0; d.protein += r.protein || 0;
+    d.carbs += r.carbs || 0; d.fat += r.fat || 0;
+  });
+  const days = Object.values(byDay);
+  const n = days.length;
+  return {
+    daysLogged: n,
+    avgKcal:    n ? days.reduce((a, d) => a + d.kcal, 0) / n : null,
+    avgProtein: n ? days.reduce((a, d) => a + d.protein, 0) / n : null,
+    avgCarbs:   n ? days.reduce((a, d) => a + d.carbs, 0) / n : null,
+    avgFat:     n ? days.reduce((a, d) => a + d.fat, 0) / n : null
+  };
+}
+
+async function trainingWindow(from, to) {
+  const sessions = await Train.sessionsBetween(from, to);
+  let sets = 0, kg = 0;
+  sessions.forEach(s => (s.sets || []).filter(x => !x.warmup).forEach(x => {
+    sets++; kg += (x.weightKg || 0) * (x.reps || 0);
+  }));
+  return { sessions: sessions.length, sets, kg: Math.round(kg) };
+}
+
+/** Everything the review screen needs, plus the recommendation. */
+async function buildReview() {
+  const s = Store.s;
+  const today = Store.dayKey();
+
+  const curFrom = Store.addDays(today, -6);
+  const prvFrom = Store.addDays(today, -13);
+  const prvTo   = Store.addDays(today, -7);
+
+  const [cur, prv, curT, prvT, metrics] = await Promise.all([
+    nutritionWindow(curFrom, today),
+    nutritionWindow(prvFrom, prvTo),
+    trainingWindow(curFrom, today),
+    trainingWindow(prvFrom, prvTo),
+    allMetrics()
+  ]);
+
+  /* --- weight trend over 21 days --- */
+  const win = Store.addDays(today, -20);
+  const recent = metrics.filter(m => m.day >= win && m.weightKg != null);
+  const tr = trendSummary(metrics.filter(m => m.day >= win), 'weightKg', 21);
+  const spanDays = recent.length ? Store.daysBetween(recent[0].day, recent[recent.length - 1].day) : 0;
+
+  const rateTrusted = recent.length >= 6 && spanDays >= 12;
+  const actualRate = rateTrusted ? tr.perWeek : null;
+
+  /* --- 14-day intake, for adaptive TDEE --- */
+  const intake14 = await nutritionWindow(Store.addDays(today, -13), today);
+  const intakeTrusted = intake14.daysLogged >= 8;
+
+  /* --- adaptive TDEE: tdee = intake − (rate_per_day × 7700) --- */
+  let tdeeReal = null;
+  if (rateTrusted && intakeTrusted) {
+    tdeeReal = Math.round(intake14.avgKcal - (actualRate / 7) * Calc.KCAL_PER_KG_FAT);
+  }
+
+  const targets = Calc.targets(s);
+  const plan = Calc.plan(s);
+  const targetRate = targetWeeklyRate(s, plan);
+
+  /* --- recommendation --- */
+  let rec = { kind: 'wait', title: 'Not enough data yet', body: '', kcal: null };
+
+  const proteinRatio = (cur.avgProtein && targets) ? cur.avgProtein / targets.protein : null;
+
+  if (!intakeTrusted) {
+    rec = { kind: 'wait', title: 'Log more days first',
+      body: `Only ${intake14.daysLogged} of the last 14 days have food logged. ` +
+            `Eight is the minimum before the numbers mean anything.`, kcal: null };
+  } else if (!rateTrusted) {
+    rec = { kind: 'wait', title: 'Need more weigh-ins',
+      body: `${recent.length} weigh-in${recent.length === 1 ? '' : 's'} in the last 3 weeks, ` +
+            `spanning ${spanDays} days. Aim for 4–7 per week — daily is better. ` +
+            `Weight is too noisy to read from a handful of points.`, kcal: null };
+  } else if (proteinRatio != null && proteinRatio < 0.88) {
+    rec = { kind: 'protein', title: 'Fix protein before calories',
+      body: `You're averaging ${Math.round(cur.avgProtein)} g against a ${targets.protein} g target ` +
+            `(${Math.round(proteinRatio * 100)}%). In a deficit that costs you muscle, which is ` +
+            `exactly what you're trying to keep. Hit protein for two weeks, then adjust calories.`,
+      kcal: null };
+  } else {
+    const gap = actualRate - targetRate;              // + = losing too slowly
+    const recommended = Math.round((tdeeReal + (targetRate / 7) * Calc.KCAL_PER_KG_FAT) / 25) * 25;
+    const change = recommended - targets.kcal;
+
+    if (Math.abs(gap) < 0.08) {
+      rec = { kind: 'hold', title: 'Hold everything',
+        body: `You're moving at ${Calc.r(actualRate, 2)} kg/week against a target of ` +
+              `${Calc.r(targetRate, 2)}. That's on the money — change nothing for another two weeks.`,
+        kcal: null };
+    } else if (Math.abs(change) < 60) {
+      rec = { kind: 'hold', title: 'Close enough',
+        body: `The maths suggests only a ${change >= 0 ? '+' : ''}${change} kcal change. ` +
+              `That's inside the noise — keep going and reassess next week.`, kcal: null };
+    } else {
+      const clamped = Math.max(-300, Math.min(300, change));
+      rec = {
+        kind: change < 0 ? 'cut' : 'raise',
+        title: `${change < 0 ? 'Reduce' : 'Increase'} calories by ${Math.abs(clamped)}`,
+        body: `You're at ${Calc.r(actualRate, 2)} kg/week, target is ${Calc.r(targetRate, 2)}. ` +
+              `Your real maintenance measures ${tdeeReal} kcal (the formula guessed ${targets.tdee}). ` +
+              `That puts your target at ${targets.kcal + clamped} kcal/day.`,
+        kcal: targets.kcal + clamped
+      };
+    }
+  }
+
+  return { cur, prv, curT, prvT, tr, actualRate, targetRate, rateTrusted,
+           intake14, intakeTrusted, tdeeReal, targets, plan, rec, recent: recent.length, spanDays };
+}
+
+/* ---------------- screen ---------------- */
+Screens.review = {
+  title: 'Weekly review', tab: 'today', back: '#/today',
+  sub: () => 'Last 7 days vs the 7 before',
+  render: () => `<div id="rev-root"><div class="spinner">Crunching…</div></div>`,
+  async mount() { await paintReview(); }
+};
+
+function arrow(cur, prev, dp = 0, unit = '') {
+  if (cur == null || prev == null) return '';
+  const d = cur - prev;
+  if (Math.abs(d) < 0.005) return ` <span class="tag">same</span>`;
+  return ` <span style="font-size:11.5px;color:var(--dim);font-weight:700">${
+    d > 0 ? '▲' : '▼'} ${Calc.r(Math.abs(d), dp)}${unit}</span>`;
+}
+
+async function paintReview() {
+  const root = $('#rev-root');
+  if (!root) return;
+
+  const r = await buildReview();
+  const s = Store.s;
+  const t = r.targets;
+
+  const toneMap = { wait: 'dim', protein: 'warn', hold: 'good', cut: 'warn', raise: 'good' };
+
+  root.innerHTML = `
+    <div class="stack">
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Recommendation</p>
+          <span class="tag">${r.rec.kind}</span></div>
+        <div class="verdict tone-${toneMap[r.rec.kind]}">
+          <b>${esc(r.rec.title)}</b><br><br>${esc(r.rec.body)}</div>
+        ${r.rec.kcal ? `
+          <button class="btn btn-primary btn-block" id="apply-rec" style="margin-top:14px">
+            Set target to ${r.rec.kcal} kcal</button>` : ''}
+        ${s.kcalOverride ? `
+          <button class="btn btn-block btn-ghost btn-sm" id="clear-rec" style="margin-top:8px">
+            Clear manual override (${s.kcalOverride} kcal)</button>` : ''}
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Energy balance</p></div>
+        ${kv('Reported intake · 14 d avg',
+             r.intake14.avgKcal ? Math.round(r.intake14.avgKcal) + ' kcal' : '—')}
+        ${kv('Measured maintenance', r.tdeeReal ? r.tdeeReal + ' kcal' : 'needs more data',
+             r.tdeeReal ? 'good' : 'dim')}
+        ${kv('Formula estimate', t ? t.tdee + ' kcal' : '—')}
+        ${r.tdeeReal && t ? kv('Formula error',
+             (r.tdeeReal - t.tdee >= 0 ? '+' : '') + (r.tdeeReal - t.tdee) + ' kcal',
+             Math.abs(r.tdeeReal - t.tdee) > 250 ? 'warn' : 'good') : ''}
+        ${kv('Current target', t ? t.kcal + ' kcal' + (t.overridden ? ' (manual)' : '') : '—')}
+        <div style="height:10px"></div>
+        ${kv('Actual rate', r.actualRate != null ? Calc.r(r.actualRate, 2) + ' kg/week' : 'unknown',
+             r.actualRate == null ? 'dim' : 'good')}
+        ${kv('Target rate', Calc.r(r.targetRate, 2) + ' kg/week')}
+        <p class="hint" style="margin-top:12px;font-size:12px">
+          Measured maintenance comes from your own data — intake minus the energy your
+          weight change accounts for. It beats any formula after two weeks of logging.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Nutrition · 7 days</p>
+          <span class="tag">${r.cur.daysLogged}/7 logged</span></div>
+        ${kv('Avg calories', (r.cur.avgKcal ? Math.round(r.cur.avgKcal) : '—')
+             + arrow(r.cur.avgKcal, r.prv.avgKcal, 0, ' kcal'))}
+        ${kv('Avg protein', (r.cur.avgProtein ? Math.round(r.cur.avgProtein) + ' g' : '—')
+             + arrow(r.cur.avgProtein, r.prv.avgProtein, 0, ' g'),
+             t && r.cur.avgProtein >= t.protein * 0.95 ? 'good' : 'warn')}
+        ${t ? kv('Protein vs target',
+             r.cur.avgProtein ? Math.round((r.cur.avgProtein / t.protein) * 100) + '%' : '—') : ''}
+        ${kv('Avg carbs', (r.cur.avgCarbs ? Math.round(r.cur.avgCarbs) + ' g' : '—')
+             + arrow(r.cur.avgCarbs, r.prv.avgCarbs, 0, ' g'))}
+        ${kv('Avg fat', (r.cur.avgFat ? Math.round(r.cur.avgFat) + ' g' : '—')
+             + arrow(r.cur.avgFat, r.prv.avgFat, 0, ' g'))}
+        ${kv('Days logged', r.cur.daysLogged + arrow(r.cur.daysLogged, r.prv.daysLogged))}
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Training · 7 days</p></div>
+        ${kv('Sessions', r.curT.sessions + arrow(r.curT.sessions, r.prvT.sessions))}
+        ${kv('Working sets', r.curT.sets + arrow(r.curT.sets, r.prvT.sets))}
+        ${kv('Total load', r.curT.kg.toLocaleString() + ' kg'
+             + arrow(r.curT.kg, r.prvT.kg, 0, ' kg'))}
+        ${r.curT.sessions === 0 ? `<div class="verdict tone-bad" style="margin-top:12px">
+          No sessions this week. In a deficit, training is what tells your body to keep the
+          muscle rather than burn it.</div>` : ''}
+      </div>
+
+      ${r.tr ? `
+      <div class="card">
+        <div class="card-head"><p class="card-title">Weight · 3 weeks</p>
+          <span class="tag">${r.recent} weigh-ins</span></div>
+        ${lineChart([
+          { values: r.tr.rows.map(x => x.weightKg), color: 'var(--dim)', width: 1.5 },
+          { values: r.tr.smoothArr, color: 'var(--accent)', width: 3, fill: true }
+        ])}
+      </div>` : ''}
+
+      <a class="btn btn-block btn-ghost" href="#/progress">Full projection</a>
+    </div>`;
+
+  $('#apply-rec')?.addEventListener('click', () => {
+    Store.set({ kcalOverride: r.rec.kcal });
+    tick();
+    toast('Target updated to ' + r.rec.kcal + ' kcal');
+    paintReview();
+  });
+
+  $('#clear-rec')?.addEventListener('click', () => {
+    Store.set({ kcalOverride: null });
+    toast('Back to calculated target');
+    paintReview();
+  });
 }
 
 /** True when launched from the home screen icon (not in Safari). */
