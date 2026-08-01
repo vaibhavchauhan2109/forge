@@ -177,3 +177,67 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
   display:inline-block;font-size:11px;font-weight:700;letter-spacing:.4px;
   padding:3px 8px;border-radius:99px;background:var(--surface-2);color:var(--dim);
 }
+/* ---------- back button ---------- */
+.back-btn{
+  appearance:none;border:0;background:transparent;color:var(--accent);
+  font-size:34px;line-height:1;padding:0 10px 4px 0;margin-left:-6px;
+  cursor:pointer;font-weight:300;
+}
+.back-btn:active{opacity:.5}
+.bar-inner{align-items:center}
+.bar-left{flex:1;min-width:0}
+
+/* ---------- segmented control ---------- */
+.seg{display:grid;gap:8px}
+.seg-opt{
+  display:flex;align-items:flex-start;gap:12px;
+  background:var(--surface-2);border:1.5px solid var(--line);
+  border-radius:12px;padding:12px 14px;cursor:pointer;
+}
+.seg-opt input{display:none}
+.seg-opt.on{border-color:var(--accent);background:rgba(255,106,43,.09)}
+.seg-opt .dot{
+  width:20px;height:20px;border-radius:50%;border:2px solid var(--line);
+  flex-shrink:0;margin-top:2px;position:relative;
+}
+.seg-opt.on .dot{border-color:var(--accent)}
+.seg-opt.on .dot::after{
+  content:"";position:absolute;inset:3px;border-radius:50%;background:var(--accent);
+}
+.seg-opt b{display:block;font-size:15px}
+.seg-opt small{color:var(--dim);font-size:13px;line-height:1.35}
+
+/* ---------- live preview / verdict blocks ---------- */
+.kv{display:flex;justify-content:space-between;gap:10px;padding:7px 0;font-size:15px}
+.kv + .kv{border-top:1px solid var(--line)}
+.kv span{color:var(--dim)}
+.kv b{font-variant-numeric:tabular-nums}
+
+.tone-good{color:var(--protein)}
+.tone-warn{color:var(--fat)}
+.tone-bad{color:var(--danger)}
+.tone-dim{color:var(--dim)}
+
+.verdict{
+  border-radius:12px;padding:12px 14px;font-size:14px;line-height:1.45;
+  background:var(--surface-2);border-left:3px solid var(--dim);
+}
+.verdict.tone-good{border-left-color:var(--protein)}
+.verdict.tone-warn{border-left-color:var(--fat)}
+.verdict.tone-bad{border-left-color:var(--danger)}
+.verdict b{color:var(--text)}
+
+.macro-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
+.macro{background:var(--surface-2);border-radius:12px;padding:10px 6px;text-align:center}
+.macro-v{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums}
+.macro-l{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);margin-top:1px}
+.macro.p .macro-v{color:var(--protein)}
+.macro.c .macro-v{color:var(--carb)}
+.macro.f .macro-v{color:var(--fat)}
+.macro.k .macro-v{color:var(--accent)}
+
+.unit-hint{font-size:12px;color:var(--dim);margin-top:4px}
+.sticky-save{
+  position:sticky;bottom:calc(var(--tabbar-h) + var(--safe-bottom) + 8px);
+  padding-top:8px;
+}

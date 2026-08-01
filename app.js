@@ -40,6 +40,83 @@ function prettyDate(d = new Date()) {
   return d.toLocaleDateString(undefined, { weekday:'long', day:'numeric', month:'short' });
 }
 
+/* ---------------- form helpers ---------------- */
+
+/** Read a form into a plain object, coercing numbers and blanks→null. */
+function readForm(form) {
+  const out = {};
+  $$('[name]', form).forEach(el => {
+    if (el.type === 'radio' && !el.checked) return;
+    let v = el.value;
+    if (el.dataset.type === 'number') {
+      v = v === '' ? null : Number(v);
+      if (v !== null && !isFinite(v)) v = null;
+    } else if (v === '') {
+      v = el.dataset.type === 'text' ? '' : null;
+    }
+    out[el.name] = v;
+  });
+  return out;
+}
+
+/** Current settings merged with unsaved form input — for live previews. */
+function draft(form) {
+  return { ...Store.s, ...readForm(form) };
+}
+
+const fmtKg = kg => kg == null ? '—' : `${Calc.r(kg,1)} kg <span class="unit-hint">(${Calc.r(Calc.kgToLb(kg),1)} lb)</span>`;
+const fmtDate = d => d ? new Date(d + 'T12:00:00').toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}) : '—';
+
+function kv(label, value, tone) {
+  return `<div class="kv"><span>${label}</span><b class="${tone ? 'tone-'+tone : ''}">${value}</b></div>`;
+}
+/* ---------------- shared render blocks ---------------- */
+
+function macroGrid(t) {
+  if (!t) return '';
+  return `
+    <div class="macro-grid">
+      <div class="macro k"><div class="macro-v">${t.kcal}</div><div class="macro-l">kcal</div></div>
+      <div class="macro p"><div class="macro-v">${t.protein}</div><div class="macro-l">protein</div></div>
+      <div class="macro c"><div class="macro-v">${t.carbs}</div><div class="macro-l">carbs</div></div>
+      <div class="macro f"><div class="macro-v">${t.fat}</div><div class="macro-l">fat</div></div>
+    </div>`;
+}
+
+function planBlock(p) {
+  const pl = Calc.plan(p);
+  if (!pl) return `<div class="verdict tone-dim">Add a target date and your measurements to see a projection.</div>`;
+  if (pl.expired) return `<div class="verdict tone-bad">Your target date has passed. Pick a new one.</div>`;
+
+  return `
+    <div class="verdict tone-${pl.tone}">
+      <b>${pl.verdict}</b> — you need to drop <b>${pl.fatToLoseKg} kg</b>
+      in <b>${pl.weeksLeft} weeks</b> (${pl.rateKgPerWeek} kg/wk = ${pl.pctPerWeek}% of bodyweight per week).
+      ${pl.pctPerWeek > 0.9
+        ? `<br><br>At a muscle-sparing pace you'd realistically hit ${pl.targetBf}% around <b>${fmtDate(pl.realisticDate)}</b>.`
+        : ''}
+    </div>
+    <div style="margin-top:12px">
+      ${kv('Current body fat', pl.currentBf + '%')}
+      ${kv('Target body fat', pl.targetBf + '%')}
+      ${kv('Lean mass now', pl.lbm + ' kg')}
+      ${kv('Projected lean mass', pl.projectedLbm + ' kg' + (pl.lbmGain > 0 ? ` (+${pl.lbmGain})` : ''))}
+      ${kv('Goal weight', pl.goalWeight + ' kg')}
+      ${kv('Daily deficit needed', pl.dailyDeficit > 0 ? pl.dailyDeficit + ' kcal' : 'none')}
+    </div>`;
+}
+
+/** Turns a <form> into live-updating: re-renders #preview on every keystroke. */
+function livePreview(form, build) {
+  const paint = () => { $('#preview').innerHTML = build(draft(form)); };
+  form.addEventListener('input', paint);
+  form.addEventListener('change', () => {
+    $$('.seg-opt', form).forEach(o => o.classList.toggle('on', $('input', o).checked));
+    paint();
+  });
+  paint();
+}
+
 /* ---------------------------------------------------------------
    SCREENS
    Each screen: { title, sub(), action(), render(), mount() }
@@ -130,68 +207,148 @@ const Screens = {
   /* ---------------- MORE / SETTINGS ---------------- */
   settings: {
     title: 'More',
-    sub: () => 'Profile, targets, backup',
-    render: () => `
+    sub: () => 'Setup, data and diagnostics',
+    render() {
+      const s  = Store.s;
+      const sm = Calc.summary(s);
+      const t  = sm.targets;
+
+      return `
       <div class="stack">
 
         <div class="card">
-          <div class="card-head"><p class="card-title">Profile</p><span class="tag">Phase 2</span></div>
-          <p class="hint">Height, weight, age, activity → BMI, TDEE and macro targets.</p>
+          <div class="card-head"><p class="card-title">Setup</p></div>
+
+          <a class="row" href="#/profile">
+            <div class="row-main">
+              <div class="row-title">Profile</div>
+              <div class="row-sub">${s.heightCm ?? '—'} cm · ${s.weightKg ?? '—'} kg · ${sm.age || '—'} yrs</div>
+            </div>
+            <div class="row-value chev"></div>
+          </a>
+
+          <a class="row" href="#/measure">
+            <div class="row-main">
+              <div class="row-title">Measurements</div>
+              <div class="row-sub">${sm.bodyFat != null
+                ? sm.bodyFat + '% body fat · ' + (sm.leanMass ?? '—') + ' kg lean'
+                : 'Not measured yet'}</div>
+            </div>
+            <div class="row-value chev"></div>
+          </a>
+
+          <a class="row" href="#/goal">
+            <div class="row-main">
+              <div class="row-title">Goal &amp; targets</div>
+              <div class="row-sub">${Calc.MODES[s.goalMode]?.label ?? '—'} → ${s.targetBodyFatPct ?? '—'}%
+                by ${s.targetDate ? fmtDate(s.targetDate) : 'no date'}</div>
+            </div>
+            <div class="row-value chev"></div>
+          </a>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><p class="card-title">Daily targets</p></div>
+          ${t ? macroGrid(t) : '<p class="hint">Complete your profile first.</p>'}
+        </div>
+
+        <div class="card">
+          <div class="card-head"><p class="card-title">Body snapshot</p></div>
+          ${kv('BMI', sm.bmi ?? '—', sm.bmiCat.tone)}
+          ${kv('Body fat', sm.bodyFat != null ? sm.bodyFat + '%' : '—')}
+          ${kv('Lean mass', sm.leanMass ? sm.leanMass + ' kg' : '—')}
+          ${kv('Waist-to-height', sm.whtr ?? '—', sm.whtrCat.tone)}
+        </div>
+
+        <div class="card">
+          <div class="card-head"><p class="card-title">Data</p></div>
+          <p class="hint" style="margin-bottom:12px">
+            Everything lives only on this phone. Export regularly — if you delete the
+            app from your home screen, the data goes with it.</p>
+          <button class="btn btn-block" id="export-btn">Export backup</button>
+          <button class="btn btn-block btn-ghost" id="import-btn" style="margin-top:8px">Restore from backup</button>
+          <input type="file" id="import-file" accept="application/json,.json" hidden>
         </div>
 
         <div class="card">
           <div class="card-head"><p class="card-title">Diagnostics</p></div>
-          <div class="row">
-            <div class="row-main"><div class="row-title">App version</div></div>
-            <div class="row-value">${App.version}</div>
-          </div>
-          <div class="row">
-            <div class="row-main"><div class="row-title">Installed</div>
-              <div class="row-sub">Running from home screen?</div></div>
-            <div class="row-value">${isStandalone() ? 'Yes ✓' : 'No — open via Safari'}</div>
-          </div>
-          <div class="row">
-            <div class="row-main"><div class="row-title">Offline cache</div>
-              <div class="row-sub">Service worker</div></div>
-            <div class="row-value" id="sw-state">checking…</div>
-          </div>
-          <div class="row">
-            <div class="row-main"><div class="row-title">Storage used</div></div>
-            <div class="row-value" id="storage-state">—</div>
-          </div>
+          ${kv('App version', App.version)}
+          ${kv('Installed', isStandalone() ? 'Yes ✓' : 'No — open via Safari')}
+          <div class="kv"><span>Offline cache</span><b id="sw-state">checking…</b></div>
+          <div class="kv"><span>Storage used</span><b id="storage-state">—</b></div>
         </div>
 
         <button class="btn btn-block" id="force-update">Check for update</button>
         <button class="btn btn-block btn-danger" id="hard-reset">Clear cache &amp; reload</button>
-        <p class="hint" style="text-align:center">Clearing the cache does <strong>not</strong> delete your logged data.</p>
+        <p class="hint" style="text-align:center">Clearing the cache does <strong>not</strong> delete your data.</p>
 
-      </div>`,
+      </div>`;
+    },
+
     async mount() {
-      /* service worker state */
+      /* ---- diagnostics ---- */
       const swEl = $('#sw-state');
       if ('serviceWorker' in navigator) {
         const reg = await navigator.serviceWorker.getRegistration();
         swEl.textContent = reg && navigator.serviceWorker.controller ? 'Active ✓'
-                        : reg ? 'Installing…' : 'Not registered';
+                         : reg ? 'Installing…' : 'Not registered';
       } else {
         swEl.textContent = 'Unsupported';
       }
 
-      /* storage estimate */
       if (navigator.storage?.estimate) {
         const { usage } = await navigator.storage.estimate();
         $('#storage-state').textContent = ((usage || 0) / 1024).toFixed(0) + ' KB';
       }
 
-      /* force the service worker to look for a new version */
+      /* ---- export ---- */
+      $('#export-btn').addEventListener('click', async () => {
+        try {
+          const data = await Store.exportAll();
+          const json = JSON.stringify(data, null, 2);
+          const name = `forge-backup-${Store.dayKey()}.json`;
+          const file = new File([json], name, { type: 'application/json' });
+
+          /* Share sheet is the reliable path inside an iOS home-screen app */
+          if (navigator.canShare?.({ files: [file] })) {
+            await navigator.share({ files: [file], title: name });
+            return;
+          }
+          const url = URL.createObjectURL(file);
+          const a = document.createElement('a');
+          a.href = url; a.download = name;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1500);
+          toast('Backup downloaded');
+        } catch (e) {
+          if (e.name !== 'AbortError') toast('Export failed: ' + e.message);
+        }
+      });
+
+      /* ---- import ---- */
+      $('#import-btn').addEventListener('click', () => $('#import-file').click());
+      $('#import-file').addEventListener('change', async (ev) => {
+        const f = ev.target.files?.[0];
+        if (!f) return;
+        if (!confirm('Replace ALL current data with this backup?')) { ev.target.value = ''; return; }
+        try {
+          const json = JSON.parse(await f.text());
+          await Store.importAll(json);
+          toast('Restored — reloading');
+          setTimeout(() => location.reload(), 900);
+        } catch (e) {
+          toast('Import failed: ' + e.message);
+        }
+      });
+
+      /* ---- update controls ---- */
       $('#force-update').addEventListener('click', async () => {
         const reg = await navigator.serviceWorker?.getRegistration();
         if (!reg) return toast('No service worker');
         await reg.update();
-        toast('Checked. Close & reopen the app to apply.');
+        toast('Checked. Force-quit and reopen to apply.');
       });
 
-      /* nuclear option — fixes any stuck cache */
       $('#hard-reset').addEventListener('click', async () => {
         if (!confirm('Clear the offline cache and reload? Your data is kept.')) return;
         if ('caches' in window) {
@@ -203,6 +360,313 @@ const Screens = {
         location.reload();
       });
     }
+  }
+};
+
+/* ============================================================
+   PROFILE
+   ============================================================ */
+Screens.profile = {
+  title: 'Profile', tab: 'settings', back: '#/settings',
+  sub: () => 'The numbers everything else is built from',
+  render() {
+    const s = Store.s;
+    const acts = Calc.ACTIVITY.map(a =>
+      `<option value="${a.v}" ${Number(s.activity) === a.v ? 'selected' : ''}>${a.label} — ${a.hint}</option>`
+    ).join('');
+    return `
+    <form id="profile-form" class="stack" onsubmit="return false">
+
+      <div class="card">
+        <label class="field"><span>Name (optional)</span>
+          <input name="name" data-type="text" value="${esc(s.name)}" placeholder="You"></label>
+
+        <div class="field">
+          <span style="display:block;font-size:13px;color:var(--dim);margin-bottom:6px;font-weight:600">Sex</span>
+          <div class="seg" style="grid-template-columns:1fr 1fr;display:grid">
+            <label class="seg-opt ${s.sex !== 'female' ? 'on' : ''}">
+              <input type="radio" name="sex" value="male" ${s.sex !== 'female' ? 'checked' : ''}>
+              <span class="dot"></span><b>Male</b></label>
+            <label class="seg-opt ${s.sex === 'female' ? 'on' : ''}">
+              <input type="radio" name="sex" value="female" ${s.sex === 'female' ? 'checked' : ''}>
+              <span class="dot"></span><b>Female</b></label>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <label class="field"><span>Birth year</span>
+            <input name="birthYear" data-type="number" type="number" inputmode="numeric"
+                   value="${s.birthYear ?? ''}" placeholder="2000"></label>
+          <label class="field"><span>Height (cm)</span>
+            <input name="heightCm" data-type="number" type="number" inputmode="decimal" step="0.5"
+                   value="${s.heightCm ?? ''}" placeholder="178"></label>
+        </div>
+
+        <label class="field"><span>Weight (kg)</span>
+          <input name="weightKg" data-type="number" type="number" inputmode="decimal" step="0.1"
+                 value="${s.weightKg ?? ''}" placeholder="80"></label>
+
+        <label class="field"><span>Activity level</span>
+          <select name="activity" data-type="number">${acts}</select></label>
+
+        <label class="field" style="margin-bottom:0"><span>Training experience</span>
+          <select name="experience">
+            <option value="novice"       ${s.experience==='novice'?'selected':''}>Novice — under 1 year</option>
+            <option value="intermediate" ${s.experience==='intermediate'?'selected':''}>Intermediate — 1–3 years</option>
+            <option value="advanced"     ${s.experience==='advanced'?'selected':''}>Advanced — 3+ years</option>
+          </select></label>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Live calculation</p></div>
+        <div id="preview"></div>
+      </div>
+
+      <div class="sticky-save">
+        <button class="btn btn-primary btn-block" id="save">Save profile</button>
+      </div>
+    </form>`;
+  },
+  mount() {
+    const form = $('#profile-form');
+
+    livePreview(form, p => {
+      const sm = Calc.summary(p);
+      return kv('Age', sm.age || '—')
+           + kv('BMI', sm.bmi ?? '—', sm.bmiCat.tone)
+           + kv('BMI category', sm.bmiCat.label, sm.bmiCat.tone)
+           + kv('BMR', sm.targets ? sm.targets.bmr + ' kcal' : '—')
+           + kv('Maintenance (TDEE)', sm.targets ? sm.targets.tdee + ' kcal' : '—');
+    });
+
+    $('#save').addEventListener('click', async () => {
+      const v = readForm(form);
+      if (!v.heightCm || !v.weightKg) return toast('Height and weight are required');
+
+      const wasNew = !Store.s.onboarded;
+      Store.set({ ...v, onboarded: true });
+
+      /* also log today's weight into history, so Phase 5 charts have data */
+      const day = Store.dayKey();
+      const row = (await Store.get('metrics', day)) || { day };
+      await Store.put('metrics', { ...row, weightKg: v.weightKg });
+
+      toast('Profile saved');
+      location.hash = wasNew ? '#/measure' : '#/settings';
+    });
+  }
+};
+
+/* ============================================================
+   MEASUREMENTS  →  body fat, lean mass, waist-to-height
+   ============================================================ */
+Screens.measure = {
+  title: 'Measurements', tab: 'settings', back: '#/settings',
+  sub: () => 'Tape method — more useful than the scale',
+  render() {
+    const s = Store.s;
+    const female = s.sex === 'female';
+    return `
+    <form id="measure-form" class="stack" onsubmit="return false">
+
+      <div class="card">
+        <p class="hint" style="margin-bottom:14px">
+          Measure relaxed, first thing in the morning, before eating.
+          Waist at navel level, neck just below the Adam's apple.
+        </p>
+
+        <div class="field-row">
+          <label class="field"><span>Waist (cm)</span>
+            <input name="waistCm" data-type="number" type="number" inputmode="decimal" step="0.5"
+                   value="${s.waistCm ?? ''}" placeholder="84"></label>
+          <label class="field"><span>Neck (cm)</span>
+            <input name="neckCm" data-type="number" type="number" inputmode="decimal" step="0.5"
+                   value="${s.neckCm ?? ''}" placeholder="38"></label>
+        </div>
+
+        ${female ? `
+        <label class="field"><span>Hip (cm)</span>
+          <input name="hipCm" data-type="number" type="number" inputmode="decimal" step="0.5"
+                 value="${s.hipCm ?? ''}" placeholder="96"></label>` : ''}
+
+        <label class="field" style="margin-bottom:0">
+          <span>Known body fat % (optional — overrides the estimate)</span>
+          <input name="bodyFatPct" data-type="number" type="number" inputmode="decimal" step="0.1"
+                 value="${s.bodyFatPct ?? ''}" placeholder="leave blank to estimate"></label>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Composition</p></div>
+        <div id="preview"></div>
+      </div>
+
+      <div class="sticky-save">
+        <button class="btn btn-primary btn-block" id="save">Save measurements</button>
+      </div>
+    </form>`;
+  },
+  mount() {
+    const form = $('#measure-form');
+
+    livePreview(form, p => {
+      const sm = Calc.summary(p);
+      let html =
+          kv('Body fat', sm.bodyFat != null ? sm.bodyFat + '%' : '—',
+             sm.bodyFat == null ? 'dim' : 'good')
+        + kv('Estimate source', sm.bfSource === 'manual' ? 'Entered manually'
+                              : sm.bfSource === 'tape' ? 'US Navy tape' : '—')
+        + kv('Lean mass', sm.leanMass ? sm.leanMass + ' kg' : '—')
+        + kv('Fat mass', sm.fatMass ? sm.fatMass + ' kg' : '—')
+        + kv('BMI', sm.bmi ?? '—', sm.bmiCat.tone)
+        + kv('Waist-to-height', sm.whtr ?? '—', sm.whtrCat.tone)
+        + kv('WHtR rating', sm.whtrCat.label, sm.whtrCat.tone);
+
+      if (sm.abs) {
+        html += sm.abs.visible
+          ? `<div class="verdict tone-good" style="margin-top:12px">
+               You're at or below the ${sm.abs.threshold}% mark where abs are typically visible.
+               Focus on building now.</div>`
+          : `<div class="verdict tone-warn" style="margin-top:12px">
+               <b>${sm.abs.pctToGo}% body fat to go</b> to reach ~${sm.abs.threshold}%
+               (about ${sm.abs.kgToLose} kg of fat, roughly ${sm.abs.weeks} weeks at a
+               muscle-sparing pace).</div>`;
+      }
+      return html;
+    });
+
+    $('#save').addEventListener('click', async () => {
+      const v = readForm(form);
+      Store.set(v);
+
+      const day = Store.dayKey();
+      const row = (await Store.get('metrics', day)) || { day };
+      await Store.put('metrics', {
+        ...row,
+        weightKg:   Store.s.weightKg,
+        waistCm:    v.waistCm ?? null,
+        neckCm:     v.neckCm ?? null,
+        hipCm:      v.hipCm ?? null,
+        bodyFatPct: Calc.bodyFat({ ...Store.s, ...v }).pct ?? null
+      });
+
+      toast('Saved');
+      location.hash = '#/goal';
+    });
+  }
+};
+
+/* ============================================================
+   GOAL + TARGETS
+   ============================================================ */
+Screens.goal = {
+  title: 'Goal', tab: 'settings', back: '#/settings',
+  sub: () => 'Strategy and daily targets',
+  render() {
+    const s = Store.s;
+    const modeOpt = (key) => {
+      const m = Calc.MODES[key];
+      const on = s.goalMode === key;
+      const sign = m.deltaPct > 0 ? '+' : '';
+      return `
+      <label class="seg-opt ${on ? 'on' : ''}">
+        <input type="radio" name="goalMode" value="${key}" ${on ? 'checked' : ''}>
+        <span class="dot"></span>
+        <span><b>${m.label} <span class="tag">${sign}${Math.round(m.deltaPct*100)}% kcal</span></b>
+        <small>${m.blurb}</small></span>
+      </label>`;
+    };
+    return `
+    <form id="goal-form" class="stack" onsubmit="return false">
+
+      <div class="card" id="suggest-card"></div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Strategy</p></div>
+        <div class="seg">
+          ${modeOpt('cut')}${modeOpt('recomp')}${modeOpt('leanBulk')}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Target</p></div>
+        <div class="field-row">
+          <label class="field"><span>Target body fat %</span>
+            <input name="targetBodyFatPct" data-type="number" type="number" inputmode="decimal" step="0.5"
+                   value="${s.targetBodyFatPct ?? ''}" placeholder="11"></label>
+          <label class="field"><span>Target date</span>
+            <input name="targetDate" type="date" min="${Store.dayKey()}"
+                   value="${s.targetDate ?? ''}"></label>
+        </div>
+        <button class="btn btn-sm btn-ghost" id="plus5">Set 5 months from today</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Projection</p></div>
+        <div id="preview"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">Manual overrides</p></div>
+        <p class="hint" style="margin-bottom:12px">Leave blank to let the app calculate.</p>
+        <div class="field-row">
+          <label class="field" style="margin-bottom:0"><span>Calories</span>
+            <input name="kcalOverride" data-type="number" type="number" inputmode="numeric"
+                   value="${s.kcalOverride ?? ''}" placeholder="auto"></label>
+          <label class="field" style="margin-bottom:0"><span>Protein (g)</span>
+            <input name="proteinOverride" data-type="number" type="number" inputmode="numeric"
+                   value="${s.proteinOverride ?? ''}" placeholder="auto"></label>
+        </div>
+      </div>
+
+      <div class="sticky-save">
+        <button class="btn btn-primary btn-block" id="save">Save goal</button>
+      </div>
+    </form>`;
+  },
+  mount() {
+    const form = $('#goal-form');
+
+    const paintSuggestion = (p) => {
+      const sg = Calc.suggestMode(p);
+      const m  = Calc.MODES[sg.mode];
+      $('#suggest-card').innerHTML = `
+        <div class="card-head"><p class="card-title">Recommended for you</p></div>
+        <div class="verdict tone-good">${sg.why}</div>
+        ${p.goalMode !== sg.mode
+          ? `<button class="btn btn-sm btn-block" id="apply-suggest" style="margin-top:12px">
+               Switch to ${m.label}</button>`
+          : ''}`;
+      $('#apply-suggest')?.addEventListener('click', () => {
+        const radio = $(`input[name="goalMode"][value="${sg.mode}"]`, form);
+        radio.checked = true;
+        form.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+    };
+
+    livePreview(form, p => {
+      paintSuggestion(p);
+      const t = Calc.targets(p);
+      return planBlock(p)
+        + `<div style="margin-top:14px"><p class="card-title" style="margin-bottom:6px">Daily targets</p></div>`
+        + macroGrid(t)
+        + (t ? `<div style="margin-top:12px">
+                  ${kv('Maintenance', t.tdee + ' kcal')}
+                  ${kv('Daily delta', (t.deltaKcal > 0 ? '+' : '') + t.deltaKcal + ' kcal')}
+                  ${kv('Protein', t.proteinPerKg + ' g/kg bodyweight')}
+                  ${t.overridden ? kv('Note', 'Manual calorie override active', 'warn') : ''}
+                </div>` : '');
+    });
+
+    $('#plus5').addEventListener('click', () => {
+      $('input[name="targetDate"]', form).value = Store.addDays(Store.dayKey(), 152);
+      form.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    $('#save').addEventListener('click', () => {
+      Store.set(readForm(form));
+      toast('Goal saved');
+      location.hash = '#/today';
+    });
   }
 };
 
@@ -232,13 +696,23 @@ function render() {
   $('#screen-sub').style.display = sub ? '' : 'none';
   $('#bar-action').innerHTML = screen.action ? screen.action() : '';
 
+  /* back button (only on sub-screens) */
+  const back = $('#back-btn');
+  if (screen.back) {
+    back.hidden = false;
+    back.onclick = () => { location.hash = screen.back; };
+  } else {
+    back.hidden = true;
+    back.onclick = null;
+  }
+
   /* body */
   $('#view').innerHTML = screen.render();
 
-  /* tab highlight */
-  $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  /* tab highlight — sub-screens declare which tab they belong to */
+  const tab = screen.tab || name;
+  $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
 
-  /* let the browser paint before we scroll + wire up */
   window.scrollTo(0, 0);
   document.title = 'Forge — ' + screen.title;
   screen.mount?.();
@@ -246,7 +720,24 @@ function render() {
 
 window.addEventListener('hashchange', () => { tick(); render(); });
 
-window.addEventListener('DOMContentLoaded', () => {
-  if (!location.hash) location.replace('#/today');
+window.addEventListener('DOMContentLoaded', async () => {
+  $('#view').innerHTML = '<div class="empty"><h3>Loading…</h3></div>';
+
+  try {
+    await Store.boot();
+  } catch (err) {
+    $('#view').innerHTML =
+      `<div class="empty"><h3>Storage unavailable</h3>
+       <p class="hint">${esc(err.message)}</p></div>`;
+    return;
+  }
+
+  if (!location.hash) history.replaceState(null, '', '#/today');
   render();
+
+  /* first run → straight to profile setup */
+  if (!Store.s.onboarded) {
+    location.hash = '#/profile';
+    toast('Set up your profile to start');
+  }
 });
