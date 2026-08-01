@@ -5,7 +5,7 @@
       and you will lose an hour wondering why nothing updated.
    ============================================================ */
 
-const VERSION = 'v9';
+const VERSION = 'v10';
 const CACHE   = `forge-${VERSION}`;
 
 const ASSETS = [
@@ -15,6 +15,7 @@ const ASSETS = [
   './store.js',
   './calc.js',
   './food.js',
+  './train.js',
   './app.js',
   './manifest.webmanifest',
   './icons/icon-180.png',

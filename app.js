@@ -1427,6 +1427,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   try {
     await Store.boot();
     await Food.seedIfEmpty();
+    await Train.seedIfEmpty();
   } catch (err) {
     $('#view').innerHTML =
       `<div class="empty"><h3>Storage unavailable</h3>
