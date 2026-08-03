@@ -287,6 +287,14 @@ const Screens = {
             </div>
             <div class="row-value chev"></div>
           </a>
+
+          <a class="row" href="#/supplements">
+            <div class="row-main">
+              <div class="row-title">Supplements</div>
+              <div class="row-sub">Your stack and daily schedule</div>
+            </div>
+            <div class="row-value chev"></div>
+          </a>
         </div>
 
         <div class="card">
@@ -1233,7 +1241,12 @@ async function paintToday() {
       <a href="#/settings" style="color:var(--accent);font-weight:700"> Export now ›</a>
     </div>` : '';
 
-  root.innerHTML = `<div class="stack">${backupWarn}${nutrition}${goalCard}${training}${habits}</div>`;
+  root.innerHTML = `<div class="stack">
+    ${backupWarn}${nutrition}
+    <div id="water-card"></div>
+    <div id="supp-card"></div>
+    ${training}${goalCard}${habits}
+  </div>`;
 
   $('#quick-log')?.addEventListener('click', () => {
     App.addCtx = { day: Store.dayKey(), meal: smartMeal() };
@@ -1245,6 +1258,8 @@ async function paintToday() {
     await Train.startSession(tpl);
     location.hash = '#/session';
   });
+  await paintWaterCard();
+  await paintSuppCard();
 }
 
 /** "150 g" / "1 scoop (30 g)" / "1 serving" */
@@ -2888,7 +2903,9 @@ async function paintBody() {
               m.weightKg != null ? Calc.r(m.weightKg, 1) + ' kg' : null,
               m.waistCm != null ? 'waist ' + Calc.r(m.waistCm, 1) : null,
               m.neckCm != null ? 'neck ' + Calc.r(m.neckCm, 1) : null,
-              m.bodyFatPct != null ? Calc.r(m.bodyFatPct, 1) + '% bf' : null
+              m.bodyFatPct != null ? Calc.r(m.bodyFatPct, 1) + '% bf' : null,
+              m.waterMl ? fmtMl(m.waterMl) + ' water' : null,
+              m.supps ? Object.keys(m.supps).length + ' supps' : null
             ].filter(Boolean).join(' · ') || 'empty'}</div>
           </div>
           <button class="fentry-del" data-delm="${m.day}" aria-label="Delete">×</button>
@@ -2897,7 +2914,9 @@ async function paintBody() {
     </div>`;
 
   root.innerHTML = `<div class="stack">
-    ${quickLog}${weightCard}${compCard}${measureCard}${histCard}
+    ${quickLog}${weightCard}${compCard}
+    <div id="water-body"></div>
+    ${measureCard}${histCard}
   </div>`;
 
   /* ---------------- wiring ---------------- */
@@ -2940,6 +2959,7 @@ async function paintBody() {
     await Store.del('metrics', b.dataset.delm);
     await paintBody();
   }));
+  await paintWaterBody(range);
 }
 
 /* ============================================================
@@ -3585,8 +3605,17 @@ async function buildReview() {
     }
   }
 
+  const [waterCur, waterPrv, suppCur, suppPrv] = await Promise.all([
+    Water.rangeStats(curFrom, today),
+    Water.rangeStats(prvFrom, prvTo),
+    Supp.rangeStats(curFrom, today),
+    Supp.rangeStats(prvFrom, prvTo)
+  ]);
+
   return { cur, prv, curT, prvT, tr, actualRate, targetRate, rateTrusted,
-           intake14, intakeTrusted, tdeeReal, targets, plan, rec, recent: recent.length, spanDays };
+           intake14, intakeTrusted, tdeeReal, targets, plan, rec,
+           recent: recent.length, spanDays,
+           waterCur, waterPrv, suppCur, suppPrv };
 }
 
 /* ---------------- screen ---------------- */
@@ -3677,6 +3706,26 @@ async function paintReview() {
         ${r.curT.sessions === 0 ? `<div class="verdict tone-bad" style="margin-top:12px">
           No sessions this week. In a deficit, training is what tells your body to keep the
           muscle rather than burn it.</div>` : ''}
+      </div>
+      
+      <div class="card">
+        <div class="card-head"><p class="card-title">Water &amp; supplements · 7 days</p></div>
+        ${kv('Avg water',
+             (r.waterCur.avgMl ? fmtMl(r.waterCur.avgMl) : '—')
+             + arrow(r.waterCur.avgMl, r.waterPrv.avgMl, 0, ' ml'))}
+        ${kv('Days on target', r.waterCur.daysHitTarget + ' / 7',
+             r.waterCur.daysHitTarget >= 5 ? 'good' : 'warn')}
+        ${kv('Days logged', r.waterCur.daysLogged + ' / 7'
+             + arrow(r.waterCur.daysLogged, r.waterPrv.daysLogged))}
+        ${r.suppCur.pct != null ? kv('Supplement adherence',
+             Math.round(r.suppCur.pct * 100) + '%'
+             + arrow(r.suppCur.pct * 100, r.suppPrv.pct != null ? r.suppPrv.pct * 100 : null, 0, '%'),
+             r.suppCur.pct >= 0.85 ? 'good' : 'warn') : ''}
+        ${r.suppCur.days ? kv('Perfect days', r.suppCur.perfectDays + ' / ' + r.suppCur.days) : ''}
+        ${r.waterCur.avgMl && r.waterCur.avgMl < r.waterCur.target * 0.6 ? `
+          <div class="verdict tone-warn" style="margin-top:12px">
+            Averaging well under target. Low hydration reduces training performance and makes
+            scale weight noisier, which makes the trend line harder to read.</div>` : ''}
       </div>
 
       ${r.tr ? `
@@ -4104,6 +4153,731 @@ function paintPlates() {
   paint();
 }
 
+/* ============================================================
+   WATER TRACKING
+   Rides on the day-keyed `metrics` row — no new object store.
+   ============================================================ */
+const Water = {
+
+  /** Daily target in ml. Manual override wins, else 35 ml per kg. */
+  targetMl() {
+    if (Store.s.waterTargetMl) return Store.s.waterTargetMl;
+    const kg = Store.s.weightKg || 80;
+    return Math.round((kg * 35) / 50) * 50;        // nearest 50 ml
+  },
+
+  autoTargetMl() {
+    const kg = Store.s.weightKg || 80;
+    return Math.round((kg * 35) / 50) * 50;
+  },
+
+  async get(day = Store.dayKey()) {
+    const r = await Store.get('metrics', day);
+    return r?.waterMl || 0;
+  },
+
+  /** Add (or subtract, with a negative value) and keep an undo trail. */
+  async add(ml, day = Store.dayKey()) {
+    const row = (await Store.get('metrics', day)) || { day };
+    row.waterMl = Math.max(0, (row.waterMl || 0) + ml);
+    row.waterLog = [...(row.waterLog || []), ml].slice(-25);
+    await Store.put('metrics', row);
+    return row.waterMl;
+  },
+
+  /** Remove the most recent addition. */
+  async undo(day = Store.dayKey()) {
+    const row = await Store.get('metrics', day);
+    if (!row?.waterLog?.length) return null;
+    const last = row.waterLog.pop();
+    row.waterMl = Math.max(0, (row.waterMl || 0) - last);
+    await Store.put('metrics', row);
+    return last;
+  },
+
+  async canUndo(day = Store.dayKey()) {
+    const row = await Store.get('metrics', day);
+    return !!row?.waterLog?.length;
+  },
+
+  /** Overwrite the total outright (used when editing a past day). */
+  async set(ml, day = Store.dayKey()) {
+    const row = (await Store.get('metrics', day)) || { day };
+    row.waterMl = Math.max(0, Math.round(ml));
+    row.waterLog = [];
+    await Store.put('metrics', row);
+    return row.waterMl;
+  },
+
+  async pct(day = Store.dayKey()) {
+    const t = this.targetMl();
+    return t ? (await this.get(day)) / t : 0;
+  },
+
+  async remaining(day = Store.dayKey()) {
+    return Math.max(0, this.targetMl() - (await this.get(day)));
+  },
+
+  /** Averages for the weekly review. */
+  async rangeStats(from, to) {
+    const rows = (await Store.all('metrics')).filter(r => r.day >= from && r.day <= to);
+    const logged = rows.filter(r => (r.waterMl || 0) > 0);
+    const target = this.targetMl();
+    const total = logged.reduce((a, r) => a + r.waterMl, 0);
+    return {
+      daysLogged: logged.length,
+      avgMl: logged.length ? total / logged.length : null,
+      daysHitTarget: logged.filter(r => r.waterMl >= target).length,
+      target
+    };
+  }
+};
+
+/** 1750 → "1.75 L";  750 → "750 ml" */
+function fmtMl(ml) {
+  if (ml == null) return '—';
+  return ml >= 1000 ? (Math.round(ml / 10) / 100) + ' L' : Math.round(ml) + ' ml';
+}
+
+/* ============================================================
+   SUPPLEMENTS
+   Definitions in kv['supplements']; daily ticks on the metrics row.
+   ============================================================ */
+const SUPP_SLOTS = [
+  { key: 'morning',     label: 'Morning' },
+  { key: 'preworkout',  label: 'Pre-workout' },
+  { key: 'postworkout', label: 'Post-workout' },
+  { key: 'meal',        label: 'With a meal' },
+  { key: 'evening',     label: 'Evening' }
+];
+
+const suppSlotLabel = k => SUPP_SLOTS.find(s => s.key === k)?.label ?? 'Anytime';
+
+const SUPP_PRESETS = [
+  { name: 'Creatine monohydrate', dose: '5 g',      slot: 'postworkout' },
+  { name: 'Whey protein',         dose: '1 scoop',  slot: 'postworkout' },
+  { name: 'Vitamin D3',           dose: '2000 IU',  slot: 'morning' },
+  { name: 'Omega-3',              dose: '2 caps',   slot: 'meal' },
+  { name: 'Magnesium',            dose: '300 mg',   slot: 'evening' },
+  { name: 'Multivitamin',         dose: '1 tablet', slot: 'morning' },
+  { name: 'Zinc',                 dose: '15 mg',    slot: 'evening' },
+  { name: 'Caffeine',             dose: '200 mg',   slot: 'preworkout' }
+];
+
+const Supp = {
+
+  /* ---------- definitions ---------- */
+
+  async all() {
+    const list = (await Store.get('kv', 'supplements'))?.value || [];
+    return list.sort((a, b) => (a.order ?? 99) - (b.order ?? 99) || a.name.localeCompare(b.name));
+  },
+
+  async _write(list) {
+    await Store.put('kv', { key: 'supplements', value: list });
+  },
+
+  async save(s) {
+    const list = (await Store.get('kv', 'supplements'))?.value || [];
+    const row = {
+      id: s.id || Store.uid(),
+      name: (s.name || '').trim(),
+      dose: (s.dose || '').trim(),
+      slot: s.slot || 'morning',
+      days: (s.days && s.days.length) ? s.days.slice().sort() : [0, 1, 2, 3, 4, 5, 6],
+      order: s.order ?? list.length,
+      active: s.active !== false
+    };
+    const i = list.findIndex(x => x.id === row.id);
+    if (i > -1) list[i] = row; else list.push(row);
+    await this._write(list);
+    return row;
+  },
+
+  async remove(id) {
+    const list = ((await Store.get('kv', 'supplements'))?.value || []).filter(x => x.id !== id);
+    await this._write(list);
+  },
+
+  async toggleActive(id) {
+    const list = (await Store.get('kv', 'supplements'))?.value || [];
+    const s = list.find(x => x.id === id);
+    if (!s) return null;
+    s.active = s.active === false;
+    await this._write(list);
+    return s;
+  },
+
+  /** dir = -1 up, +1 down */
+  async move(id, dir) {
+    const list = await this.all();
+    const i = list.findIndex(x => x.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    list.forEach((s, k) => { s.order = k; });
+    await this._write(list);
+  },
+
+  /* ---------- scheduling ---------- */
+
+  /** Active supplements scheduled for that date's weekday. */
+  dueOn(list, day = Store.dayKey()) {
+    const [y, m, d] = day.split('-').map(Number);
+    const dow = new Date(y, m - 1, d).getDay();
+    return list.filter(s => s.active !== false && (s.days || []).includes(dow));
+  },
+
+  bySlot(list) {
+    return SUPP_SLOTS
+      .map(sl => ({ ...sl, items: list.filter(s => s.slot === sl.key) }))
+      .filter(g => g.items.length);
+  },
+
+  /* ---------- daily ticks ---------- */
+
+  async taken(day = Store.dayKey()) {
+    const r = await Store.get('metrics', day);
+    return r?.supps || {};
+  },
+
+  async toggle(id, day = Store.dayKey()) {
+    const row = (await Store.get('metrics', day)) || { day };
+    row.supps = { ...(row.supps || {}) };
+    if (row.supps[id]) delete row.supps[id]; else row.supps[id] = true;
+    await Store.put('metrics', row);
+    return !!row.supps[id];
+  },
+
+  async setAll(day = Store.dayKey(), value = true) {
+    const list = await this.all();
+    const due = this.dueOn(list, day);
+    const row = (await Store.get('metrics', day)) || { day };
+    row.supps = { ...(row.supps || {}) };
+    due.forEach(s => { if (value) row.supps[s.id] = true; else delete row.supps[s.id]; });
+    await Store.put('metrics', row);
+    return due.length;
+  },
+
+  async progress(day = Store.dayKey()) {
+    const list = await this.all();
+    const due = this.dueOn(list, day);
+    const t = await this.taken(day);
+    const done = due.filter(s => t[s.id]).length;
+    return { due: due.length, done, pct: due.length ? done / due.length : 0, items: due, taken: t };
+  },
+
+  /**
+   * Consecutive complete days. Days with nothing scheduled are skipped, not counted.
+   * An unfinished today doesn't break the streak.
+   */
+  async streak() {
+    const list = (await this.all()).filter(s => s.active !== false);
+    if (!list.length) return 0;
+
+    const rows = await Store.all('metrics');
+    const byDay = {};
+    rows.forEach(r => { byDay[r.day] = r; });
+
+    const floor = Store.s.createdAt || Store.addDays(Store.dayKey(), -365);
+
+    /** true = all taken, false = missed some, null = nothing scheduled */
+    const state = day => {
+      const due = this.dueOn(list, day);
+      if (!due.length) return null;
+      const t = byDay[day]?.supps || {};
+      return due.every(s => t[s.id]);
+    };
+
+    let d = Store.dayKey();
+    if (state(d) === false) d = Store.addDays(d, -1);   // today still in progress
+
+    let n = 0, guard = 0;
+    while (d >= floor && guard++ < 500) {
+      const st = state(d);
+      if (st === null) { d = Store.addDays(d, -1); continue; }
+      if (st) { n++; d = Store.addDays(d, -1); } else break;
+    }
+    return n;
+  },
+
+  /** Adherence across a date range, for the weekly review. */
+  async rangeStats(from, to) {
+    const list = (await this.all()).filter(s => s.active !== false);
+    if (!list.length) return { due: 0, done: 0, pct: null, perfectDays: 0, days: 0 };
+
+    const rows = await Store.all('metrics');
+    const byDay = {};
+    rows.forEach(r => { byDay[r.day] = r; });
+
+    let due = 0, done = 0, perfectDays = 0, days = 0;
+    let d = from;
+    while (d <= to) {
+      const dueToday = this.dueOn(list, d);
+      if (dueToday.length) {
+        days++;
+        const t = byDay[d]?.supps || {};
+        const hit = dueToday.filter(s => t[s.id]).length;
+        due += dueToday.length;
+        done += hit;
+        if (hit === dueToday.length) perfectDays++;
+      }
+      d = Store.addDays(d, 1);
+    }
+    return { due, done, pct: due ? done / due : null, perfectDays, days };
+  }
+};
+
+/* ============================================================
+   WATER CARD  (renders into #water-card)
+   ============================================================ */
+const WATER_QUICK = [250, 330, 500, 750];
+
+async function paintWaterCard(day = Store.dayKey()) {
+  const el = $('#water-card');
+  if (!el) return;
+
+  const target = Water.targetMl();
+  const have   = await Water.get(day);
+  const pct    = target ? have / target : 0;
+  const left   = Math.max(0, target - have);
+  const undoOk = await Water.canUndo(day);
+  const hour   = new Date().getHours();
+  const isToday = day === Store.dayKey();
+
+  const nudge = (isToday && hour >= 18 && pct < 0.5)
+    ? `<div class="verdict tone-warn" style="margin-top:12px">
+         <b>${fmtMl(left)} to go</b> and the day's nearly done. Dehydration blunts
+         training performance more than most people expect.</div>`
+    : (pct >= 1
+      ? `<div class="verdict tone-good" style="margin-top:12px">Target hit ✓</div>` : '');
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <p class="card-title">Water</p>
+        <span class="tag">target ${fmtMl(target)}</span>
+      </div>
+
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px">
+        <div>
+          <div class="wbig">${fmtMl(have)}</div>
+          <div class="wsub">of ${fmtMl(target)}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="wbig tone-${pct >= 1 ? 'good' : 'dim'}" style="font-size:22px">
+            ${pct >= 1 ? '100%' : Math.round(pct * 100) + '%'}</div>
+          <div class="wsub">${left ? fmtMl(left) + ' left' : 'done'}</div>
+        </div>
+      </div>
+
+      <div class="bar" style="margin-top:12px">
+        <i class="water" style="width:${Math.min(100, pct * 100).toFixed(0)}%"></i></div>
+
+      <div class="chips" style="margin-top:14px">
+        ${WATER_QUICK.map(ml => `<button class="chip" data-wq="${ml}">+${ml}</button>`).join('')}
+        <button class="chip" data-wq="custom">+ custom</button>
+        ${undoOk ? `<button class="chip" id="w-undo">↩ undo</button>` : ''}
+      </div>
+
+      ${nudge}
+    </div>`;
+
+  $$('[data-wq]').forEach(b => b.addEventListener('click', async () => {
+    let ml;
+    if (b.dataset.wq === 'custom') {
+      const v = prompt('How many ml?', '400');
+      if (!v) return;
+      ml = Math.round(Number(v));
+      if (!isFinite(ml) || ml <= 0) return toast('Enter a number');
+    } else {
+      ml = Number(b.dataset.wq);
+    }
+    await Water.add(ml, day);
+    tick();
+    await paintWaterCard(day);
+  }));
+
+  $('#w-undo')?.addEventListener('click', async () => {
+    const removed = await Water.undo(day);
+    if (removed) toast('Removed ' + fmtMl(removed));
+    await paintWaterCard(day);
+  });
+}
+
+/* ============================================================
+   SUPPLEMENT CHECKLIST  (renders into #supp-card)
+   ============================================================ */
+async function paintSuppCard(day = Store.dayKey()) {
+  const el = $('#supp-card');
+  if (!el) return;
+
+  const all = await Supp.all();
+
+  if (!all.length) {
+    el.innerHTML = `
+      <div class="card">
+        <div class="card-head"><p class="card-title">Supplements</p></div>
+        <p class="hint" style="margin-bottom:12px">
+          Nothing set up yet. Add what you take and tick it off daily.</p>
+        <a class="btn btn-sm btn-block btn-ghost" href="#/supplements">Set up supplements</a>
+      </div>`;
+    return;
+  }
+
+  const prog   = await Supp.progress(day);
+  const streak = await Supp.streak();
+  const groups = Supp.bySlot(prog.items);
+  const complete = prog.due > 0 && prog.done === prog.due;
+
+  if (prog.due === 0) {
+    el.innerHTML = `
+      <div class="card">
+        <div class="card-head"><p class="card-title">Supplements</p>
+          <a href="#/supplements" style="color:var(--accent);font-size:13px;font-weight:700">Manage ›</a></div>
+        <p class="hint">Nothing scheduled for ${DOW[new Date().getDay()]}.</p>
+      </div>`;
+    return;
+  }
+
+  /* collapse to one line once everything's ticked */
+  if (complete && !App.suppExpanded) {
+    el.innerHTML = `
+      <div class="card">
+        <div class="card-head"><p class="card-title">Supplements</p>
+          ${streak > 1 ? `<span class="tag">${streak}-day streak</span>` : ''}</div>
+        <div class="verdict tone-good" style="display:flex;align-items:center;
+             justify-content:space-between;gap:10px">
+          <span>All ${prog.due} taken ✓</span>
+          <button class="btn btn-sm" id="sup-expand">Edit</button>
+        </div>
+      </div>`;
+    $('#sup-expand').addEventListener('click', () => {
+      App.suppExpanded = true;
+      paintSuppCard(day);
+    });
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <p class="card-title">Supplements</p>
+        <span class="tag">${prog.done}/${prog.due}${streak > 1 ? ' · ' + streak + 'd streak' : ''}</span>
+      </div>
+
+      <div class="bar" style="margin-bottom:4px">
+        <i style="width:${(prog.pct * 100).toFixed(0)}%;background:var(--protein)"></i></div>
+
+      ${groups.map((g, gi) => `
+        <div class="slotlab ${gi === 0 ? 'first' : ''}">${g.label}</div>
+        ${g.items.map(s => `
+          <div class="suprow ${prog.taken[s.id] ? 'on' : ''}" data-sup="${s.id}">
+            <span class="check">✓</span>
+            <span class="sup-main">
+              <span class="sup-name">${esc(s.name)}</span>
+              ${s.dose ? `<div class="sup-dose">${esc(s.dose)}</div>` : ''}
+            </span>
+          </div>`).join('')}
+      `).join('')}
+
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn btn-sm btn-ghost" id="sup-all" style="flex:1">
+          ${prog.done === prog.due ? 'Clear all' : 'Mark all taken'}</button>
+        <a class="btn btn-sm btn-ghost" href="#/supplements" style="flex:1">Manage</a>
+      </div>
+    </div>`;
+
+  $$('[data-sup]').forEach(r => r.addEventListener('click', async () => {
+    await Supp.toggle(r.dataset.sup, day);
+    tick();
+    App.suppExpanded = true;          // don't collapse mid-tapping
+    await paintSuppCard(day);
+  }));
+
+  $('#sup-all').addEventListener('click', async () => {
+    await Supp.setAll(day, prog.done !== prog.due);
+    App.suppExpanded = false;
+    tick();
+    await paintSuppCard(day);
+  });
+}
+
+/* ============================================================
+   SUPPLEMENTS — management screen
+   ============================================================ */
+Screens.supplements = {
+  title: 'Supplements', tab: 'settings', back: '#/settings',
+  sub: () => App.suppState?.view === 'edit' ? 'Edit item' : 'What you take and when',
+  render: () => `<div id="sup-root"><div class="spinner">Loading…</div></div>`,
+  async mount() {
+    App.suppState = { view: 'list', editing: null };
+    await paintSupplements();
+  }
+};
+
+async function paintSupplements() {
+  if (App.suppState.view === 'edit') return paintSuppEdit();
+
+  const list = await Supp.all();
+  const daysLabel = s => {
+    const d = s.days || [];
+    if (d.length === 7) return 'Every day';
+    if (d.length === 0) return 'Never';
+    return d.map(i => DOW[i]).join(' ');
+  };
+
+  const existing = new Set(list.map(s => s.name.toLowerCase()));
+  const presets = SUPP_PRESETS.filter(p => !existing.has(p.name.toLowerCase()));
+
+  $('#sup-root').innerHTML = `
+    <div class="stack">
+
+      ${list.length ? `
+      <div class="card" style="padding:0">
+        <div class="card-head" style="padding:16px 16px 10px;margin:0">
+          <p class="card-title">Your stack (${list.length})</p>
+          <span class="tag">${list.filter(s => s.active !== false).length} active</span>
+        </div>
+        ${list.map((s, i) => `
+          <div class="tpl" style="${s.active === false ? 'opacity:.45' : ''}">
+            <div class="tpl-main" data-edit="${s.id}" style="cursor:pointer">
+              <div class="tpl-name">${esc(s.name)}${s.dose ? ` <span class="tag">${esc(s.dose)}</span>` : ''}</div>
+              <div class="tpl-sub">${suppSlotLabel(s.slot)} · ${daysLabel(s)}${s.active === false ? ' · paused' : ''}</div>
+            </div>
+            <div class="tpl-actions">
+              <button class="iconbtn" data-up="${s.id}" ${i === 0 ? 'disabled' : ''}>↑</button>
+              <button class="iconbtn" data-down="${s.id}" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
+              <button class="iconbtn" data-toggle="${s.id}">${s.active === false ? '▶' : '⏸'}</button>
+            </div>
+          </div>`).join('')}
+      </div>` : `
+      <div class="empty">
+        <h3>No supplements yet</h3>
+        <p class="hint">Add what you actually take. Tap one of the common ones below,
+          or create your own.</p>
+      </div>`}
+
+      <button class="btn btn-primary btn-block" id="sup-new">+ Add supplement</button>
+
+      ${presets.length ? `
+      <div class="card">
+        <div class="card-head"><p class="card-title">Common ones</p></div>
+        <div class="chips">
+          ${presets.map((p, i) => `<button class="chip" data-preset="${i}">${esc(p.name)}</button>`).join('')}
+        </div>
+        <p class="hint" style="margin-top:10px;font-size:12px">
+          Tap to add with a sensible default dose and timing — edit afterwards if needed.</p>
+      </div>` : ''}
+
+      <div class="card">
+        <div class="card-head"><p class="card-title">How it works</p></div>
+        <p class="hint">Items appear on the Today screen only on the weekdays you schedule.
+          Pausing an item hides it without deleting your history. A day counts toward your
+          streak when everything scheduled for it is ticked.</p>
+      </div>
+
+    </div>`;
+
+  $$('[data-edit]').forEach(b => b.addEventListener('click', async () => {
+    const all = await Supp.all();
+    App.suppState = { view: 'edit', editing: all.find(x => x.id === b.dataset.edit) };
+    $('#screen-sub').textContent = 'Edit item';
+    paintSupplements();
+  }));
+
+  $$('[data-up]').forEach(b => b.addEventListener('click', async () => {
+    await Supp.move(b.dataset.up, -1); paintSupplements();
+  }));
+  $$('[data-down]').forEach(b => b.addEventListener('click', async () => {
+    await Supp.move(b.dataset.down, 1); paintSupplements();
+  }));
+  $$('[data-toggle]').forEach(b => b.addEventListener('click', async () => {
+    await Supp.toggleActive(b.dataset.toggle); paintSupplements();
+  }));
+
+  $$('[data-preset]').forEach(b => b.addEventListener('click', async () => {
+    const p = SUPP_PRESETS.filter(x =>
+      !new Set(list.map(s => s.name.toLowerCase())).has(x.name.toLowerCase()))[Number(b.dataset.preset)];
+    if (!p) return;
+    await Supp.save({ ...p });
+    tick(); toast(p.name + ' added');
+    paintSupplements();
+  }));
+
+  $('#sup-new').addEventListener('click', () => {
+    App.suppState = { view: 'edit', editing: null };
+    $('#screen-sub').textContent = 'Edit item';
+    paintSupplements();
+  });
+}
+
+function paintSuppEdit() {
+  const s = App.suppState.editing;
+  const isNew = !s;
+  const cur = s || { name: '', dose: '', slot: 'morning', days: [0,1,2,3,4,5,6], active: true };
+  let days = (cur.days || []).slice();
+
+  $('#sup-root').innerHTML = `
+    <button class="btn btn-sm btn-ghost" id="se-back" style="margin-bottom:14px">‹ Back</button>
+
+    <form id="se-form" class="card" onsubmit="return false">
+      <label class="field"><span>Name</span>
+        <input name="name" data-type="text" value="${esc(cur.name)}" placeholder="Creatine monohydrate"></label>
+
+      <div class="field-row">
+        <label class="field"><span>Dose</span>
+          <input name="dose" data-type="text" value="${esc(cur.dose)}" placeholder="5 g"></label>
+        <label class="field"><span>When</span>
+          <select name="slot">
+            ${SUPP_SLOTS.map(sl =>
+              `<option value="${sl.key}" ${cur.slot === sl.key ? 'selected' : ''}>${sl.label}</option>`
+            ).join('')}
+          </select></label>
+      </div>
+
+      <span style="display:block;font-size:13px;color:var(--dim);margin-bottom:6px;font-weight:600">Days</span>
+      <div class="chips" style="margin-bottom:10px">
+        ${DOW.map((d, i) =>
+          `<button type="button" class="chip ${days.includes(i) ? 'on' : ''}" data-day="${i}">${d}</button>`
+        ).join('')}
+      </div>
+      <div class="chips" style="margin-bottom:16px">
+        <button type="button" class="chip" data-preset-days="all">Every day</button>
+        <button type="button" class="chip" data-preset-days="weekdays">Mon–Fri</button>
+        <button type="button" class="chip" data-preset-days="training">Training days</button>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="se-save">
+        ${isNew ? 'Add supplement' : 'Save changes'}</button>
+      ${!isNew ? `<button class="btn btn-block btn-danger" id="se-del" style="margin-top:8px">
+        Delete</button>` : ''}
+    </form>`;
+
+  const repaintDays = () => $$('[data-day]').forEach(b =>
+    b.classList.toggle('on', days.includes(Number(b.dataset.day))));
+
+  $('#se-back').addEventListener('click', () => {
+    App.suppState = { view: 'list', editing: null };
+    $('#screen-sub').textContent = 'What you take and when';
+    paintSupplements();
+  });
+
+  $$('[data-day]').forEach(b => b.addEventListener('click', () => {
+    const i = Number(b.dataset.day);
+    const k = days.indexOf(i);
+    if (k > -1) days.splice(k, 1); else days.push(i);
+    days.sort();
+    repaintDays();
+  }));
+
+  $$('[data-preset-days]').forEach(b => b.addEventListener('click', async () => {
+    const kind = b.dataset.presetDays;
+    if (kind === 'all')      days = [0, 1, 2, 3, 4, 5, 6];
+    if (kind === 'weekdays') days = [1, 2, 3, 4, 5];
+    if (kind === 'training') {
+      const tpls = await Train.allTemplates();
+      const d = tpls.map(t => t.dayHint).filter(x => x != null);
+      days = d.length ? [...new Set(d)].sort() : [1, 2, 4, 5];
+    }
+    repaintDays();
+  }));
+
+  $('#se-save').addEventListener('click', async () => {
+    const v = readForm($('#se-form'));
+    if (!v.name || !v.name.trim()) return toast('Name it first');
+    if (!days.length) return toast('Pick at least one day');
+    await Supp.save({
+      ...(s || {}),
+      name: v.name, dose: v.dose, slot: v.slot,
+      days, active: cur.active !== false
+    });
+    tick(); toast('Saved');
+    App.suppState = { view: 'list', editing: null };
+    $('#screen-sub').textContent = 'What you take and when';
+    paintSupplements();
+  });
+
+  $('#se-del')?.addEventListener('click', async () => {
+    if (!confirm(`Delete ${cur.name}? Days you already ticked stay in your history.`)) return;
+    await Supp.remove(cur.id);
+    toast('Deleted');
+    App.suppState = { view: 'list', editing: null };
+    $('#screen-sub').textContent = 'What you take and when';
+    paintSupplements();
+  });
+}
+
+/* ============================================================
+   WATER — Body screen section (renders into #water-body)
+   ============================================================ */
+async function paintWaterBody(range = 90) {
+  const el = $('#water-body');
+  if (!el) return;
+
+  const all = (await Store.all('metrics')).sort((a, b) => a.day.localeCompare(b.day));
+  const cutoff = range ? Store.addDays(Store.dayKey(), -range) : '0000-00-00';
+  const rows = all.filter(m => m.day >= cutoff);
+
+  const target = Water.targetMl();
+  const auto = Water.autoTargetMl();
+  const today = Store.dayKey();
+  const todayMl = (await Store.get('metrics', today))?.waterMl || 0;
+
+  const logged = rows.filter(r => (r.waterMl || 0) > 0);
+  const avg = logged.length ? logged.reduce((a, r) => a + r.waterMl, 0) / logged.length : null;
+  const hit = logged.filter(r => r.waterMl >= target).length;
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head"><p class="card-title">Water</p>
+        <span class="tag">${logged.length} days logged</span></div>
+
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-value">${avg ? (Math.round(avg / 100) / 10) : '—'}</div>
+          <div class="stat-label">avg litres</div></div>
+        <div class="stat"><div class="stat-value">${hit}</div>
+          <div class="stat-label">days on target</div></div>
+        <div class="stat"><div class="stat-value">${Math.round(target / 100) / 10}</div>
+          <div class="stat-label">target litres</div></div>
+      </div>
+
+      ${logged.length > 1 ? `<div style="margin-top:16px">
+        ${lineChart([{ values: logged.map(r => r.waterMl), color: 'var(--carb)', width: 2.5, fill: true }])}
+      </div>` : ''}
+
+      <div class="field-row" style="margin-top:16px">
+        <label class="field" style="margin-bottom:0"><span>Today's total (ml)</span>
+          <input id="wb-today" type="number" inputmode="numeric" step="50" value="${todayMl}"></label>
+        <label class="field" style="margin-bottom:0"><span>Target override (ml)</span>
+          <input id="wb-target" type="number" inputmode="numeric" step="100"
+                 value="${Store.s.waterTargetMl ?? ''}" placeholder="auto: ${auto}"></label>
+      </div>
+
+      <button class="btn btn-block" id="wb-save" style="margin-top:12px">Save water settings</button>
+      ${Store.s.waterTargetMl ? `<button class="btn btn-block btn-ghost btn-sm" id="wb-clear"
+        style="margin-top:8px">Use automatic target (${auto} ml)</button>` : ''}
+      <p class="hint" style="margin-top:10px;font-size:12px">
+        Automatic target is 35 ml per kg of bodyweight, so it moves as your weight does.
+        Add water quickly from the Today screen.</p>
+    </div>`;
+
+  $('#wb-save').addEventListener('click', async () => {
+    const ml = Number($('#wb-today').value);
+    if (isFinite(ml) && ml >= 0) await Water.set(ml, today);
+    const tgt = $('#wb-target').value;
+    Store.set({ waterTargetMl: tgt === '' ? null : Math.max(500, Number(tgt)) });
+    toast('Saved');
+    await paintWaterBody(range);
+  });
+
+  $('#wb-clear')?.addEventListener('click', async () => {
+    Store.set({ waterTargetMl: null });
+    toast('Automatic target restored');
+    await paintWaterBody(range);
+  });
+}
+
 /** True when launched from the home screen icon (not in Safari). */
 function isStandalone() {
   return window.navigator.standalone === true ||
@@ -4125,6 +4899,7 @@ function render() {
   if (name !== 'food') App.lastDeleted = null;
   if (name !== 'session') stopRest();
   if (name !== 'photos') freePhotoUrls();
+  if (name !== 'today') App.suppExpanded = false;
 
   /* header */
   $('#screen-title').textContent =
