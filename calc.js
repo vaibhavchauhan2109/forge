@@ -101,6 +101,33 @@ const Calc = (() => {
   const leanMassKg = (kg, bfPct) => (kg && bfPct != null) ? kg * (1 - bfPct / 100) : null;
   const fatMassKg  = (kg, bfPct) => (kg && bfPct != null) ? kg * (bfPct / 100)     : null;
 
+  /** Fat-free mass index — lean mass relative to height. The honest "how muscular" number. */
+  function ffmi(leanKg, heightCm) {
+    if (!leanKg || !heightCm) return null;
+    return leanKg / ((heightCm / 100) ** 2);
+  }
+
+  /** Height-adjusted to a 1.8 m reference, so tall and short lifters compare fairly. */
+  function ffmiNormalised(leanKg, heightCm) {
+    const f = ffmi(leanKg, heightCm);
+    return f == null ? null : f + 6.1 * (1.8 - heightCm / 100);
+  }
+
+  function ffmiCategory(f) {
+    if (f == null)   return { label: '—',                tone: 'dim'  };
+    if (f < 17)      return { label: 'Below average',    tone: 'dim'  };
+    if (f < 18.5)    return { label: 'Average',          tone: 'dim'  };
+    if (f < 20)      return { label: 'Fit',              tone: 'good' };
+    if (f < 21.5)    return { label: 'Athletic',         tone: 'good' };
+    if (f < 23)      return { label: 'Well built',       tone: 'good' };
+    if (f < 25)      return { label: 'Advanced natural', tone: 'good' };
+    return             { label: 'Beyond natural range', tone: 'warn' };
+  }
+
+  /** Lean mass required to reach a given FFMI at your height. */
+  const leanForFFMI = (target, heightCm) =>
+    (target && heightCm) ? target * ((heightCm / 100) ** 2) : null;
+
   /* ---------------- energy ---------------- */
 
   /** Mifflin–St Jeor — the standard when body fat is unknown. */
@@ -287,6 +314,9 @@ const Calc = (() => {
       bfSource: bfInfo.source,
       leanMass: r(leanMassKg(p.weightKg, bfInfo.pct) ?? 0, 1) || null,
       fatMass:  r(fatMassKg(p.weightKg, bfInfo.pct) ?? 0, 1) || null,
+      ffmi:     r(ffmi(leanMassKg(p.weightKg, bfInfo.pct), p.heightCm) ?? 0, 1) || null,
+      ffmiNorm: r(ffmiNormalised(leanMassKg(p.weightKg, bfInfo.pct), p.heightCm) ?? 0, 1) || null,
+      ffmiCat:  ffmiCategory(ffmi(leanMassKg(p.weightKg, bfInfo.pct), p.heightCm)),
       targets:  targets(p),
       plan:     plan(p),
       abs:      absOutlook(p),
@@ -299,6 +329,7 @@ const Calc = (() => {
     kgToLb, lbToKg, cmToIn, inToCm, r, age,
     bmi, bmiCategory, whtr, whtrCategory,
     navyBodyFat, bodyFat, leanMassKg, fatMassKg,
+    ffmi, ffmiNormalised, ffmiCategory, leanForFFMI,
     bmrMifflin, bmrKatch, bmr, tdee, targets, weeklyRate,
     plan, absOutlook, suggestMode, summary
   };
