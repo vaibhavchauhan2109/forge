@@ -1301,7 +1301,7 @@ function libRow(f) {
     <button class="pick" data-lib="${f.id}">
       <div class="pick-main">
         <div class="pick-name">${f.favorite ? '<span class="star">★</span> ' : ''}${esc(f.name)}</div>
-        <div class="pick-sub">${esc(f.brand || 'per 100 g')}${f.servingLabel ? ' · ' + esc(f.servingLabel) : ''}</div>
+        <div class="pick-sub">${esc(f.category || f.brand || 'per 100 g')}${f.servingLabel ? ' · ' + esc(f.servingLabel) : ''}</div>
       </div>
       <div class="pick-k">${Math.round(p.kcal || 0)} kcal<b>${Math.round(p.protein || 0)} g P</b></div>
     </button>`;
@@ -3707,7 +3707,7 @@ async function paintReview() {
           No sessions this week. In a deficit, training is what tells your body to keep the
           muscle rather than burn it.</div>` : ''}
       </div>
-      
+
       <div class="card">
         <div class="card-head"><p class="card-title">Water &amp; supplements · 7 days</p></div>
         ${kv('Avg water',
@@ -4939,6 +4939,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   try {
     await Store.boot();
     await Food.seedIfEmpty();
+    await Food.seedAllPacks();
     await Train.seedIfEmpty();
   } catch (err) {
     $('#view').innerHTML =
