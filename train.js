@@ -14,7 +14,9 @@ const Train = (() => {
     { key: 'hamstrings', label: 'Hamstrings', mev: 6,  mav: 16 },
     { key: 'glutes',     label: 'Glutes',     mev: 6,  mav: 16 },
     { key: 'calves',     label: 'Calves',     mev: 6,  mav: 16 },
-    { key: 'core',       label: 'Core',       mev: 6,  mav: 16 }
+    { key: 'core',       label: 'Core',       mev: 6,  mav: 16 },
+    { key: 'forearms',   label: 'Forearms',   mev: 4,  mav: 12 },
+    { key: 'neck',       label: 'Neck',       mev: 3,  mav: 10 }
   ];
 
   const muscleLabel = k => MUSCLES.find(m => m.key === k)?.label ?? k;
@@ -464,11 +466,174 @@ const Train = (() => {
       t + (s.sets || []).filter(x => !x.warmup)
            .reduce((a, x) => a + (x.weightKg || 0) * (x.reps || 0), 0), 0));
   }
+/* ---------------- exercise packs (versioned, run once each) ----------------
+     Tuple: [name, muscle, equipment, isCompound, repMin, repMax] */
 
+  const EX_PACKS = {
+
+  'plan-v1': [
+    ['Reverse barbell curl',       'forearms',   'barbell',    0, 12, 15],
+    ['Barbell wrist curl',         'forearms',   'barbell',    0, 15, 20],
+    ['Dumbbell wrist extension',   'forearms',   'dumbbell',   0, 12, 15],
+    ["Farmer's carry (seconds)",   'forearms',   'dumbbell',   1, 30, 45],
+    ['Barbell shrug',              'back',       'barbell',    0, 8,  12],
+    ['Wide seated cable row',      'back',       'cable',      1, 10, 12],
+    ['45° back extension',         'hamstrings', 'bodyweight', 0, 12, 15],
+    ['Machine lateral raise',      'shoulders',  'machine',    0, 12, 15],
+    ['Overhead dumbbell extension','triceps',    'dumbbell',   0, 10, 12],
+    ['EZ-bar curl',                'biceps',     'barbell',    0, 8,  12],
+    ['Spider curl',                'biceps',     'dumbbell',   0, 10, 12],
+    ['Decline crunch',             'core',       'bodyweight', 0, 10, 15],
+    ['Neck curl',                  'neck',       'bodyweight', 0, 12, 15],
+    ['Neck extension',             'neck',       'bodyweight', 0, 12, 15],
+    ['Easy run (minutes)',         'core',       'bodyweight', 0, 10, 10]
+  ]
+
+  };
+
+  /** Adds an exercise pack once. Skips names you already have. */
+  async function seedExercisePack(key) {
+    const pack = EX_PACKS[key];
+    if (!pack) return 0;
+    const done = (await Store.get('kv', 'exPacks'))?.value || [];
+    if (done.includes(key)) return 0;
+
+    const have = new Set((await allExercises()).map(e => e.name.toLowerCase()));
+    const rows = pack
+      .filter(t => !have.has(String(t[0]).toLowerCase()))
+      .map(([name, muscle, equipment, compound, repMin, repMax]) => ({
+        id: Store.uid(), name, muscle, equipment,
+        isCompound: !!compound, repMin, repMax, custom: false, notes: ''
+      }));
+
+    if (rows.length) await Store.putMany('exercises', rows);
+    await Store.put('kv', { key: 'exPacks', value: [...done, key] });
+    return rows.length;
+  }
+
+  async function seedAllExercisePacks() {
+    let n = 0;
+    for (const k of Object.keys(EX_PACKS)) n += await seedExercisePack(k);
+    return n;
+  }
+/* ---------------- template packs (versioned) ----------------
+     [ name, dayHint(0=Sun..6=Sat), [ [exerciseName, sets, repMin, repMax, rir, restSec] … ] ] */
+
+  const TPL_PACKS = {
+
+  'plan-v1': [
+    ['Lower A — Squat', 1, [
+      ['Barbell squat',              4, 5,  5,  2, 210],
+      ['Bulgarian split squat',      3, 10, 10, 1, 120],
+      ['Leg press',                  3, 12, 12, 1, 150],
+      ['Seated leg curl',            3, 12, 12, 1, 90],
+      ['Standing calf raise',        4, 10, 10, 1, 60],
+      ['Hanging leg raise',          3, 12, 12, 1, 60]
+    ]],
+    ['Upper A — Bench', 2, [
+      ['Barbell bench press',        4, 5,  5,  2, 210],
+      ['Chest-supported row',        4, 8,  10, 1, 150],
+      ['Incline dumbbell press',     3, 8,  10, 1, 120],
+      ['Lat pulldown',               3, 10, 12, 1, 120],
+      ['Cable lateral raise',        3, 15, 15, 1, 45],
+      ['Face pull',                  3, 15, 15, 1, 45],
+      ['Overhead cable extension',   3, 12, 12, 1, 90]
+    ]],
+    ['Arms · Forearms · Core', 3, [
+      ['Incline dumbbell curl',      3, 10, 10, 1, 75],
+      ['Cable curl',                 3, 12, 12, 1, 75],
+      ['Hammer curl',                3, 12, 12, 1, 75],
+      ['Reverse barbell curl',       3, 15, 15, 1, 60],
+      ['Barbell wrist curl',         3, 20, 20, 1, 60],
+      ['Dumbbell wrist extension',   2, 15, 15, 1, 45],
+      ["Farmer's carry (seconds)",   3, 40, 40, 1, 75],
+      ['Cable crunch',               3, 15, 15, 1, 60],
+      ['Easy run (minutes)',         1, 10, 10, 4, 0]
+    ]],
+    ['Lower B — Hinge', 4, [
+      ['Romanian deadlift',          4, 6,  6,  2, 210],
+      ['Barbell hip thrust',         3, 10, 10, 1, 150],
+      ['Hack squat',                 3, 10, 10, 1, 150],
+      ['45° back extension',         3, 15, 15, 1, 90],
+      ['Seated calf raise',          3, 12, 12, 1, 60],
+      ['Ab wheel rollout',           3, 12, 12, 1, 60]
+    ]],
+    ['Upper B — Overhead', 5, [
+      ['Overhead press',             4, 5,  5,  2, 210],
+      ['Pull-up',                    4, 6,  8,  1, 180],
+      ['Dumbbell bench press',       3, 8,  10, 1, 120],
+      ['Wide seated cable row',      3, 10, 12, 1, 120],
+      ['Lateral raise',              3, 12, 15, 1, 45],
+      ['Barbell shrug',              3, 10, 10, 1, 60],
+      ['Skull crusher',              3, 8,  10, 1, 90]
+    ]],
+    ['Arms · Delts · Core', 6, [
+      ['Close-grip bench press',     3, 8,  8,  1, 90],
+      ['Triceps pushdown',           3, 12, 12, 1, 60],
+      ['Overhead dumbbell extension',3, 12, 12, 1, 60],
+      ['EZ-bar curl',                3, 10, 10, 1, 75],
+      ['Preacher curl',              3, 12, 12, 1, 60],
+      ['Rear delt fly',              3, 15, 15, 1, 60],
+      ['Machine lateral raise',      3, 15, 15, 0, 60],
+      ['Leg extension',              3, 15, 15, 1, 75],
+      ['Neck curl',                  2, 15, 15, 1, 45],
+      ['Neck extension',             2, 15, 15, 1, 45],
+      ['Plank (seconds)',            3, 45, 45, 1, 45],
+      ['Easy run (minutes)',         1, 10, 10, 4, 0]
+    ]]
+  ]
+
+  };
+
+  /** Seeds a template pack once. Also clears the 4 stock templates if unused. */
+  async function seedTemplatePack(key) {
+    const pack = TPL_PACKS[key];
+    if (!pack) return 0;
+    const done = (await Store.get('kv', 'tplPacks'))?.value || [];
+    if (done.includes(key)) return 0;
+
+    /* drop the default Upper/Lower A/B templates if you never trained them */
+    const STOCK = ['upper a', 'lower a', 'upper b', 'lower b'];
+    const used = new Set((await allSessions()).map(s => s.templateId).filter(Boolean));
+    for (const t of await Store.all('templates')) {
+      if (STOCK.includes(t.name.trim().toLowerCase()) && !used.has(t.id)) {
+        await Store.del('templates', t.id);
+      }
+    }
+
+    const { byName } = await exerciseMap();
+    const have = new Set((await Store.all('templates')).map(t => t.name.toLowerCase()));
+    let n = 0;
+
+    for (let i = 0; i < pack.length; i++) {
+      const [name, dayHint, slots] = pack[i];
+      if (have.has(name.toLowerCase())) continue;
+      await saveTemplate({
+        id: null, name, dayHint, order: i,
+        slots: slots.map(([exName, sets, repMin, repMax, rir, restSec]) => {
+          const ex = byName[exName.toLowerCase()];
+          return ex ? { exerciseId: ex.id, exerciseName: ex.name,
+                        sets, repMin, repMax, rir, restSec, note: '' } : null;
+        }).filter(Boolean)
+      });
+      n++;
+    }
+
+    await Store.put('kv', { key: 'tplPacks', value: [...done, key] });
+    return n;
+  }
+
+  async function seedAllTemplatePacks() {
+    let n = 0;
+    for (const k of Object.keys(TPL_PACKS)) n += await seedTemplatePack(k);
+    return n;
+  }
   /* ---------------- public API ---------------- */
   return {
     MUSCLES, muscleLabel,
     seedIfEmpty, seedExercises, seedTemplates,
+    seedExercisePack, seedAllExercisePacks, EX_PACKS,
+    seedTemplatePack, seedAllTemplatePacks, TPL_PACKS,
     allExercises, getExercise, saveExercise, deleteExercise, searchExercises, exerciseMap,
     allTemplates, getTemplate, saveTemplate, deleteTemplate, duplicateTemplate,
     allSessions, getSession, saveSession, deleteSession, sessionsBetween, recentSessions,
