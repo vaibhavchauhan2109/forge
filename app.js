@@ -554,6 +554,10 @@ Screens.measure = {
           <input name="hipCm" data-type="number" type="number" inputmode="decimal" step="0.5"
                  value="${s.hipCm ?? ''}" placeholder="96"></label>` : ''}
 
+        <label class="field"><span>Flexed arm (cm)</span>
+          <input name="armCm" data-type="number" type="number" inputmode="decimal" step="0.5"
+                 value="${s.armCm ?? ''}" placeholder="34"></label>
+
         <label class="field" style="margin-bottom:0">
           <span>Known body fat % (optional — overrides the estimate)</span>
           <input name="bodyFatPct" data-type="number" type="number" inputmode="decimal" step="0.1"
@@ -582,6 +586,17 @@ Screens.measure = {
                               : sm.bfSource === 'tape' ? 'US Navy tape' : '—')
         + kv('Lean mass', sm.leanMass ? sm.leanMass + ' kg' : '—')
         + kv('Fat mass', sm.fatMass ? sm.fatMass + ' kg' : '—')
+        + kv('FFMI', sm.ffmi ?? '—', sm.ffmiCat.tone)
+        + kv('FFMI rating', sm.ffmiCat.label, sm.ffmiCat.tone)
+        + (sm.leanMass && p.heightCm ? (() => {
+            const need = Calc.leanForFFMI(20, p.heightCm);
+            const gap  = need - sm.leanMass;
+            return kv('Lean mass for FFMI 20',
+              Calc.r(need, 1) + ' kg (' +
+              (gap > 0 ? '+' + Calc.r(gap, 1) + ' to go' : 'reached ✓') + ')',
+              gap > 0 ? 'warn' : 'good');
+          })() : '')
+        + (p.armCm ? kv('Flexed arm', p.armCm + ' cm · ' + Calc.r(p.armCm / 2.54, 1) + '″') : '')
         + kv('BMI', sm.bmi ?? '—', sm.bmiCat.tone)
         + kv('Waist-to-height', sm.whtr ?? '—', sm.whtrCat.tone)
         + kv('WHtR rating', sm.whtrCat.label, sm.whtrCat.tone);
@@ -611,6 +626,7 @@ Screens.measure = {
         waistCm:    v.waistCm ?? null,
         neckCm:     v.neckCm ?? null,
         hipCm:      v.hipCm ?? null,
+        armCm:      v.armCm ?? null,
         bodyFatPct: Calc.bodyFat({ ...Store.s, ...v }).pct ?? null
       });
 
@@ -2859,6 +2875,7 @@ async function paintBody() {
         </div>` : `<p class="hint" style="margin-top:12px">
             Log waist and neck twice or more to see a body-fat trend.</p>`}
       <div style="margin-top:14px">
+        ${kv('FFMI', (sm.ffmi ?? '—') + (sm.ffmi ? ' · ' + sm.ffmiCat.label : ''), sm.ffmiCat.tone)}
         ${kv('BMI', sm.bmi ?? '—', sm.bmiCat.tone)}
         ${kv('Waist-to-height', sm.whtr ?? '—', sm.whtrCat.tone)}
         ${kv('Rating', sm.whtrCat.label, sm.whtrCat.tone)}
@@ -2876,7 +2893,7 @@ async function paintBody() {
       <div class="card-head"><p class="card-title">Measurements</p></div>
       ${kv('Waist', s.waistCm ? s.waistCm + ' cm' : '—')}
       ${kv('Neck', s.neckCm ? s.neckCm + ' cm' : '—')}
-      ${s.sex === 'female' ? kv('Hip', s.hipCm ? s.hipCm + ' cm' : '—') : ''}
+      ${kv('Flexed arm', s.armCm ? s.armCm + ' cm · ' + Calc.r(s.armCm / 2.54, 1) + '″' : '—')}
       ${waistDelta != null
         ? kv('Waist change in range',
              (waistDelta >= 0 ? '+' : '') + Calc.r(waistDelta, 1) + ' cm',
@@ -2904,6 +2921,7 @@ async function paintBody() {
               m.waistCm != null ? 'waist ' + Calc.r(m.waistCm, 1) : null,
               m.neckCm != null ? 'neck ' + Calc.r(m.neckCm, 1) : null,
               m.bodyFatPct != null ? Calc.r(m.bodyFatPct, 1) + '% bf' : null,
+              m.armCm != null ? 'arm ' + Calc.r(m.armCm, 1) : null,
               m.waterMl ? fmtMl(m.waterMl) + ' water' : null,
               m.supps ? Object.keys(m.supps).length + ' supps' : null
             ].filter(Boolean).join(' · ') || 'empty'}</div>
