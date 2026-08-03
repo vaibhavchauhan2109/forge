@@ -4941,6 +4941,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     await Food.seedIfEmpty();
     await Food.seedAllPacks();
     await Train.seedIfEmpty();
+    await Train.seedAllExercisePacks();
+    await Train.seedAllTemplatePacks();
   } catch (err) {
     $('#view').innerHTML =
       `<div class="empty"><h3>Storage unavailable</h3>
